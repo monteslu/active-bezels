@@ -1,0 +1,10 @@
+node_modules/
+*.tgz
+
+# Built .ab archives -- pack them from source, don't commit the artifact.
+*.ab
+
+# Example guests load their image assets at runtime and degrade gracefully
+# without them. Keep binary art out of the repo -- an example must never
+# depend on redistributing something that isn't cleared for it.
+examples/*/assets/

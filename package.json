@@ -1,0 +1,65 @@
+{
+  "name": "active-bezel",
+  "version": "0.1.0",
+  "description": "Active Bezels: executable companions to a specific ROM. A .ab package runs once per emulated frame, reads the emulator's live memory regions, and renders the complete final scene \u2014 maps, HUDs, reconstructed world graphics, artwork \u2014 around or over the original game picture. This is the format spec, the reference runtime, and the packaging tool.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package": "./src/Package.js",
+    "./matcher": "./src/Matcher.js",
+    "./regions": "./src/Regions.js",
+    "./config": "./src/Config.js",
+    "./runtime": "./src/Runtime.js",
+    "./compositor": "./src/Compositor.js",
+    "./gpu-compositor": "./src/GpuCompositor.js",
+    "./host": "./src/Host.js",
+    "./sdk/abi.json": "./sdk/abi.json",
+    "./sdk/active_bezel.h": "./sdk/active_bezel.h"
+  },
+  "bin": {
+    "abtool": "./bin/abtool.js"
+  },
+  "files": [
+    "index.js",
+    "src/",
+    "sdk/",
+    "bin/",
+    "docs/",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "active-bezel",
+    "bezel",
+    "emulator",
+    "libretro",
+    "retro",
+    "wasm",
+    "overlay"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "author": "Luis Montes",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monteslu/active-bezels.git"
+  },
+  "bugs": {
+    "url": "https://github.com/monteslu/active-bezels/issues"
+  },
+  "homepage": "https://github.com/monteslu/active-bezels#readme",
+  "dependencies": {
+    "native-gles": "^0.5.0",
+    "yauzl": "^3.2.0"
+  },
+  "optionalDependencies": {
+    "wasmcart": "^0.16.0"
+  }
+}

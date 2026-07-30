@@ -1,0 +1,99 @@
+name: test
+
+# The full suite runs on a clean checkout: no bundled cores, no toolchain.
+# Package loading, manifest validation, ROM matching, region access and the CPU
+# compositor are pure JS. native-gles (required) is a native addon that may fail
+# to LOAD on a given machine, and wasmcart (optional) is only for Lua guests --
+# the runtime falls back from both, and the jobs below prove it.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the engines floor; 24 is what the sibling projects run. Testing
+        # both catches a syntax/API assumption that only holds on the newer one.
+        node-version: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      # A normal install: native-gles is REQUIRED (every consumer needs GL to
+      # run) and gets built here. --no-optional would skip it and quietly test
+      # a shape nobody actually installs.
+      - name: Install
+        run: npm install
+
+      # wasmcart is the one genuinely optional dependency -- only a
+      # lua54-wasmcart guest needs it -- so prove the suite passes without it.
+      - name: Install without optional dependencies
+        run: |
+          rm -rf node_modules
+          npm install --no-optional
+
+      - name: Test
+        run: npm test
+
+      # GpuCompositor must stay IMPORTABLE even when GL is unusable. native-gles
+      # is a native addon, so it can be installed but unloadable (missing
+      # prebuild, bad install script, Node ABI mismatch) -- and that must not
+      # take down package loading, manifest validation, or the CPU compositor,
+      # none of which need GL.
+      - name: Import surface loads headless
+        run: |
+          node -e "import('./index.js').then(m => {
+            const need = ['ActiveBezelRuntime','ActiveBezelPackage','ActiveBezelCompositor','ActiveBezelRegions','matchActiveBezel','validateManifest','resolveCoreModule'];
+            const missing = need.filter(k => typeof m[k] === 'undefined');
+            if (missing.length) { console.error('missing exports:', missing.join(', ')); process.exit(1); }
+            console.log('index exports OK');
+          })"
+          node -e "import('./src/GpuCompositor.js').then(() => console.log('GpuCompositor imports without native-gles'))"
+
+      - name: abtool runs
+        run: |
+          node bin/abtool.js verify examples/diagnostic
+          node bin/abtool.js pack examples/diagnostic /tmp/diagnostic.ab
+          node bin/abtool.js inspect /tmp/diagnostic.ab
+
+  # A published tarball is not the same thing as a green checkout: `files` can
+  # omit something the entry point imports, and nobody notices until install.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Pack and install the tarball into a clean project
+        run: |
+          npm install --no-optional
+          npm pack --pack-destination /tmp
+          mkdir /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install /tmp/active-bezel-*.tgz
+          node -e "import('active-bezel').then(m => {
+            if (typeof m.ActiveBezelRuntime !== 'function') { console.error('runtime missing from tarball'); process.exit(1); }
+            console.log('tarball import OK');
+          })"
+          node -e "import('active-bezel/host').then(() => console.log('subpath export OK'))"
+          test -x node_modules/.bin/abtool || { echo "abtool bin not linked"; exit 1; }
+          node_modules/.bin/abtool verify node_modules/active-bezel/examples/diagnostic >/dev/null
+          node_modules/.bin/abtool pack node_modules/active-bezel/examples/diagnostic /tmp/from-tarball.ab >/dev/null
+          node_modules/.bin/abtool inspect /tmp/from-tarball.ab >/dev/null
+          echo "abtool bin resolves and round-trips a package from the tarball"
