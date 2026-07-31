@@ -219,26 +219,21 @@ function checkRuntime(name, wasmPath) {
     const wantSig = `(${want.params.join(',')})->${want.result ?? 'void'}`;
     const gotSig = `(${got.params.join(',')})->${got.result ?? 'void'}`;
     /*
-     * Signature mismatches are WARNINGS, not failures, and that is a
-     * deliberate call about a real discrepancy that exists right now:
+     * Signature mismatches are FAILURES.
      *
-     *   runtime.c  ab_init(void)      ab_event(int32_t kind)
-     *   abi.json   ab_init(i32)       ab_event(i32, i32)
-     *   Runtime.js ab_init(0)         ab_event(type, 0)
+     * They were warnings while a real three-way drift existed: runtime.c
+     * declared ab_init(void)/ab_event(int32_t), sdk/abi.json declared
+     * ab_init(i32)/ab_event(i32,i32), and src/Runtime.js called them with
+     * the extra argument. Nothing broke, because a JS -> wasm call silently
+     * DROPS surplus arguments -- which is exactly what made it invisible.
      *
-     * All four shipped wasms follow runtime.c. The host calls them with the
-     * extra argument abi.json describes, which works only because a JS ->
-     * wasm call silently DROPS surplus arguments. So nothing is broken in
-     * practice, but exactly one of the three is the spec and the other two
-     * are drifting from it.
-     *
-     * Failing here would red-build the repo over a docs/impl disagreement
-     * this script has no authority to settle -- runtime.c, src/ and
-     * sdk/abi.json are owned elsewhere. Silently dropping the check would
-     * throw away the only signal that the drift exists. So: report it every
-     * run, keep the build green, let the owner decide which side moves.
+     * sdk/abi.json won (examples/diagnostic/main.c, the original C guest,
+     * always took ab_init(descriptor) and ab_event(type, data)), and all
+     * four runtimes were rebuilt to match. With the spec and the artifacts
+     * agreeing there is no judgement left to defer, and a host that does
+     * NOT drop surplus arguments would trap on a regression here.
      */
-    if (wantSig !== gotSig) warnings.push(`${fn} is ${gotSig}, sdk/abi.json declares ${wantSig}`);
+    if (wantSig !== gotSig) failures.push(`${fn} is ${gotSig}, sdk/abi.json declares ${wantSig}`);
   }
   for (const fn of REQUIRED_EXPORTS) {
     if (!exportNames.has(fn)) failures.push(`missing REQUIRED export ${fn}`);

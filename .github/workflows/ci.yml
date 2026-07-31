@@ -1,0 +1,230 @@
+name: ci
+
+# Two different questions, two jobs.
+#
+# `test` asks: do the COMMITTED wasms work? That is what a consumer gets from
+# npm, and it needs no toolchain, so it runs on every push in about a minute.
+#
+# `build-runtimes` asks: can those wasms still be REPRODUCED from source? That
+# needs emsdk and takes far longer, and it is the only thing that catches a
+# committed binary drifting away from the runtime.c it supposedly came from.
+#
+# The existing test.yml covers the pure-JS surface (packaging, tarball,
+# headless import). This file is specifically about runtimes/.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Pin the toolchain that produced the committed wasms. An unpinned "latest"
+  # would make the drift check below meaningless -- every emsdk bump would
+  # report a size delta that says nothing about whether the SOURCE changed.
+  EMSDK_VERSION: 4.0.18
+
+jobs:
+  test:
+    name: test (committed wasms)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # The runtime tests SKIP a language whose main.wasm is absent, which is
+      # right for a working tree mid-rebuild but wrong for CI: a repo that
+      # dropped a wasm would go green with a quarter of the suite silently
+      # missing. Assert all four are present BEFORE testing, so a skip can
+      # only ever mean something the suite itself decided.
+      - name: All four runtimes are committed
+        run: |
+          missing=0
+          for rt in lua js python ruby; do
+            if [ ! -f "runtimes/$rt/main.wasm" ]; then
+              echo "::error::runtimes/$rt/main.wasm is missing from the repo"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "all four runtimes present"
+
+      - name: Install
+        run: npm ci || npm install
+
+      # Runs check-runtimes via the pretest hook, then the suite. Both must
+      # pass. `--test-reporter spec` keeps the skip count visible in the log.
+      - name: Verify runtimes and test
+        run: npm test
+
+      # A skipped test here means a runtime failed to LOAD despite its wasm
+      # being present -- a real regression that a plain "tests passed" would
+      # hide, because node:test exits 0 with skips.
+      - name: No unexpected skips
+        run: |
+          npm test 2>&1 | tee /tmp/test.log || exit 1
+          skipped=$(grep -E '^. skipped ' /tmp/test.log | tail -1 | grep -oE '[0-9]+$')
+          echo "skipped: ${skipped:-0}"
+          if [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::${skipped} test(s) skipped; every runtime wasm is committed so nothing should skip"
+            grep -E 'skip' /tmp/test.log | head -20
+            exit 1
+          fi
+
+  build-runtimes:
+    name: rebuild from source
+    runs-on: ubuntu-latest
+    # Rebuilding four language engines from source is minutes, not seconds.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # mruby's build system is rake, so a host ruby is required before emsdk
+      # is even relevant. Ubuntu runners ship one; make it explicit so a
+      # runner image change fails loudly here instead of deep inside rake.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Install rake
+        run: gem install rake --no-document
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          # Cache the emsdk install itself; it is ~1GB and identical run over run.
+          actions-cache-folder: emsdk-cache-${{ env.EMSDK_VERSION }}
+
+      - name: Toolchain versions
+        run: |
+          emcc --version | head -1
+          node --version
+          ruby --version
+
+      # The engine source trees are the slow part: MicroPython and mruby are
+      # git clones, QuickJS is a clone when no donor checkout exists, and Lua
+      # is a tarball fetch. Key on the build inputs that decide WHICH source
+      # gets fetched -- build.sh (holds the pinned version) plus each
+      # runtime's config. A change to runtime.c must NOT bust this cache;
+      # runtime.c is compiled every run regardless and only the vendored
+      # engine is being cached.
+      - name: Cache engine source trees
+        uses: actions/cache@v4
+        with:
+          path: |
+            runtimes/lua/vendor
+            runtimes/js/vendor
+            runtimes/js/obj
+            runtimes/python/vendor
+            runtimes/python/micropython_embed
+            runtimes/ruby/vendor
+          key: engines-${{ env.EMSDK_VERSION }}-${{ hashFiles('runtimes/*/build.sh', 'runtimes/lua/abconf.h', 'runtimes/lua/patch-lua.py', 'runtimes/python/mpconfigport.h', 'runtimes/python/micropython_embed.mk', 'runtimes/ruby/mruby_wasm_config.rb') }}
+          restore-keys: |
+            engines-${{ env.EMSDK_VERSION }}-
+
+      - name: Install
+        run: npm ci || npm install
+
+      # Keep the committed artifacts to compare against after the rebuild.
+      # Copied, not moved: a build.sh that fails early must leave the repo's
+      # own wasm in place so the later steps still have something to check.
+      - name: Snapshot committed wasms
+        run: |
+          mkdir -p /tmp/committed
+          for rt in lua js python ruby; do
+            cp "runtimes/$rt/main.wasm" "/tmp/committed/$rt.wasm"
+          done
+
+      # Each build.sh self-verifies imports/exports and exits 1 on violation,
+      # so a broken ABI fails right here. Built separately so the log says
+      # which language broke.
+      - name: Build lua
+        run: ./runtimes/lua/build.sh
+      - name: Build js
+        run: ./runtimes/js/build.sh
+      - name: Build python
+        run: ./runtimes/python/build.sh
+      - name: Build ruby
+        run: ./runtimes/ruby/build.sh
+
+      # Independent of the per-build assertions: budgets, ab_host-only
+      # imports, and the five exports, checked against sdk/abi.json.
+      - name: Check rebuilt runtimes
+        run: node scripts/check-runtimes.mjs
+
+      # The real proof that a rebuild is usable: the same 50 tests, now
+      # running against the freshly built wasms rather than the committed ones.
+      - name: Test against rebuilt wasms
+        run: npm test
+
+      # Drift is a WARNING, not a failure, on purpose. Emscripten output is
+      # not bit-reproducible across versions or even always within one (build
+      # paths, temp filenames and LLVM ordering all leak in), so a byte
+      # comparison would fail constantly for reasons unrelated to the source.
+      # A SIZE delta, though, is a genuine signal: same emsdk in, materially
+      # different size out, means runtime.c or an engine pin moved without
+      # the committed wasm being regenerated. Surface it, do not gate on it.
+      - name: Drift check (committed vs rebuilt)
+        if: always()
+        run: |
+          {
+            echo "## Runtime sizes"
+            echo ""
+            echo "| runtime | committed | rebuilt | delta | identical |"
+            echo "| --- | ---: | ---: | ---: | :---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          drifted=0
+          for rt in lua js python ruby; do
+            new="runtimes/$rt/main.wasm"
+            old="/tmp/committed/$rt.wasm"
+            [ -f "$new" ] || continue
+            newsize=$(wc -c < "$new")
+            oldsize=$(wc -c < "$old")
+            delta=$((newsize - oldsize))
+            if cmp -s "$old" "$new"; then
+              same="yes"
+            else
+              same="no"
+              drifted=1
+            fi
+            printf '| %s | %s | %s | %+d | %s |\n' \
+              "$rt" "$oldsize" "$newsize" "$delta" "$same" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          {
+            echo ""
+            if [ "$drifted" -eq 0 ]; then
+              echo "Every rebuilt wasm is byte-identical to the committed one."
+            else
+              echo "> [!NOTE]"
+              echo "> At least one rebuilt wasm differs from the committed bytes."
+              echo "> This is expected when the toolchain or an engine pin moved, and is"
+              echo "> **not** a failure: emscripten output is not reliably bit-reproducible."
+              echo "> A large size delta is the part worth looking at -- it suggests the"
+              echo "> committed artifact was not regenerated after a source change."
+              echo "> To refresh: run the runtime's build.sh and commit the new main.wasm."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Upload the rebuilt binaries so a drift warning can actually be
+      # investigated: download, diff, decide whether to commit them.
+      - name: Upload rebuilt wasms
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebuilt-runtimes
+          path: runtimes/*/main.wasm
+          if-no-files-found: warn

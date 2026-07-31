@@ -910,7 +910,12 @@ AB_EXPORT("ab_abi_version")
 int32_t ab_abi_version(void) { return 1; }
 
 AB_EXPORT("ab_init")
-int32_t ab_init(void) {
+int32_t ab_init(uint32_t descriptor) {
+  /* The ABI passes a descriptor word (sdk/abi.json: ab_init(i32)->i32).
+   * Nothing needs it yet, but the signature is the contract: a JS host
+   * calling ab_init(0) against a zero-arg export only works because
+   * wasm silently drops surplus arguments, and a stricter host would not. */
+  (void)descriptor;
   boot();
   return 0; /* 0 = success. A script error is NOT an init failure: the error
              * state still wants ticks so it can display itself. */
@@ -932,7 +937,8 @@ void ab_tick(uint64_t frame) {
 }
 
 AB_EXPORT("ab_event")
-void ab_event(int32_t kind) {
+void ab_event(int32_t kind, uint32_t data) {
+  (void)data;                          /* reserved by the ABI, unused today */
   /* ASSETS_RELOADED (6): the package archive changed under us -- re-read
    * main.js. This is the whole iteration story: edit, repack, replay. */
   if (kind == 6) { boot(); return; }
