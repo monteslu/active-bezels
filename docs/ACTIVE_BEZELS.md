@@ -137,7 +137,19 @@ The host imports include:
 - Package asset size/read calls.
 - Clear, game placement/fitting, alpha rectangle, triangle, text, scissor, and
   reset.
-- Persistent RGBA texture create/draw/destroy handles.
+- Persistent RGBA texture create/draw/destroy handles, including
+  `command_draw_texture_rect` to blit a SOURCE SUB-RECTANGLE of a texture.
+  This is what makes an atlas usable: without it a texture can only be drawn
+  whole, so a tile renderer needs one texture per tile (or one draw command per
+  pixel, which exhausts the 16,384-command budget on any busy scene). With it,
+  a package bakes one sheet and spends one command per tile.
+- `game_width`, `game_height` and `game_pixel(x, y)` to READ the frame being
+  composited, returning `0xRRGGBBAA` (0 outside the frame). A package that
+  reconstructs world graphics needs this to match the emulator's own colours:
+  palette RAM gives an index, and only the core knows the RGB it decodes that
+  index to. Cores disagree — NES colour `$22` is `(104,136,252)` by the common
+  NTSC table and `(93,150,255)` in fceumm — so a guest that converts through
+  its own table draws a visibly different shade next to the live picture.
 
 Colors are packed `0xRRGGBBAA`. Geometry uses logical canvas coordinates.
 Nearest sampling is the pixel-art default.

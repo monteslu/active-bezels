@@ -166,6 +166,27 @@ export class ActiveBezelRuntime {
         texture_destroy: (handle) => this.compositor.destroyTexture(handle),
         command_draw_texture: (handle, x, y, width, height) =>
           this.compositor.drawTexture(handle, x, y, width, height),
+        // Sub-rectangle variant. A guest with an atlas (a tilesheet, a glyph
+        // sheet) can draw one entry per command instead of uploading a texture
+        // per entry -- for a tile renderer that is the difference between one
+        // command per TILE and one per PIXEL.
+        command_draw_texture_rect: (handle, x, y, width, height, sx, sy, sw, sh) =>
+          this.compositor.drawTexture(handle, x, y, width, height, sx, sy, sw, sh),
+        // --- Reading the game's own frame -------------------------------
+        // A guest could DRAW the game frame but never look at it, so a package
+        // reconstructing world graphics had to convert palette indices through
+        // its own NTSC table -- and cores disagree on that decode, so the
+        // rebuilt half came out a visibly different shade of sky. These let a
+        // guest sample the emulator's actual output instead of guessing.
+        game_width: () => this._gameWidth | 0,
+        game_height: () => this._gameHeight | 0,
+        game_pixel: (x, y) => {
+          const px = this._gamePixels;
+          const w = this._gameWidth | 0, h = this._gameHeight | 0;
+          if (!px || x < 0 || y < 0 || x >= w || y >= h) return 0;
+          const i = ((y | 0) * w + (x | 0)) * 4;
+          return (((px[i] << 24) | (px[i + 1] << 16) | (px[i + 2] << 8) | px[i + 3]) >>> 0) | 0;
+        },
         log: (ptr, length) => {
           if (process.env.RETROEMU_DEBUG) console.error(`[active-bezel] ${readGuestString(this, ptr, length)}`);
         },
@@ -186,6 +207,7 @@ export class ActiveBezelRuntime {
         throw new Error('this core does not expose an importable WebAssembly.Memory');
       }
     }
+    this._hostImports = imports.ab_host;
     this.instance = await WebAssembly.instantiate(module, imports);
     const exports = this.instance.exports;
     for (const name of ['ab_abi_version', 'ab_init', 'ab_tick']) {
@@ -199,6 +221,13 @@ export class ActiveBezelRuntime {
 
   processFrame(gameRgba, gameWidth, gameHeight, frameNumber) {
     if (!this.enabled) return { rgba: gameRgba, width: gameWidth, height: gameHeight };
+    // Expose THIS frame's pixels to the guest for the duration of the tick.
+    // A package that reconstructs world graphics has to match the emulator's
+    // own colours; converting NES palette indices through its own table gets
+    // visibly different RGB, because cores disagree on the NTSC decode.
+    this._gamePixels = gameRgba;
+    this._gameWidth = gameWidth;
+    this._gameHeight = gameHeight;
     this.compositor.reset();
     const started = performance.now();
     try {

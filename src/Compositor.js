@@ -50,10 +50,15 @@ function blitNearest(src, sw, sh, dst, dw, dh, rect) {
   const { x0, y0, x1, y1 } = logicalRect(rect, dw, dh);
   const rw = Math.max(1, x1 - x0);
   const rh = Math.max(1, y1 - y0);
+  // Optional SOURCE sub-rectangle. Without it a texture can only ever be drawn
+  // whole, which forces atlas users into one texture per sprite -- and for a
+  // tile renderer that means one command per PIXEL instead of per tile.
+  const srcX = rect.sx ?? 0, srcY = rect.sy ?? 0;
+  const srcW = rect.sw ?? sw, srcH = rect.sh ?? sh;
   for (let y = y0; y < y1; y++) {
-    const sy = Math.min(sh - 1, Math.floor((y - y0) * sh / rh));
+    const sy = Math.min(sh - 1, srcY + Math.floor((y - y0) * srcH / rh));
     for (let x = x0; x < x1; x++) {
-      const sx = Math.min(sw - 1, Math.floor((x - x0) * sw / rw));
+      const sx = Math.min(sw - 1, srcX + Math.floor((x - x0) * srcW / rw));
       const si = (sy * sw + sx) * 4;
       const di = (y * dw + x) * 4;
       const a = src[si + 3] / 255;
@@ -74,15 +79,20 @@ function blitLinear(src, sw, sh, dst, dw, dh, rect) {
   const { x0, y0, x1, y1 } = logicalRect(rect, dw, dh);
   const rw = Math.max(1, x1 - x0);
   const rh = Math.max(1, y1 - y0);
+  // Source sub-rectangle, as in blitNearest. Sampling is clamped INSIDE the
+  // sub-rect so a filtered atlas tile cannot bleed in its neighbours' pixels.
+  const srcX = rect.sx ?? 0, srcY = rect.sy ?? 0;
+  const srcW = rect.sw ?? sw, srcH = rect.sh ?? sh;
+  const maxX = srcX + srcW - 1, maxY = srcY + srcH - 1;
   for (let y = y0; y < y1; y++) {
-    const fy = Math.max(0, Math.min(sh - 1, ((y - y0 + 0.5) * sh / rh) - 0.5));
+    const fy = Math.max(srcY, Math.min(maxY, srcY + ((y - y0 + 0.5) * srcH / rh) - 0.5));
     const ya = Math.floor(fy);
-    const yb = Math.min(sh - 1, ya + 1);
+    const yb = Math.min(maxY, ya + 1);
     const ty = fy - ya;
     for (let x = x0; x < x1; x++) {
-      const fx = Math.max(0, Math.min(sw - 1, ((x - x0 + 0.5) * sw / rw) - 0.5));
+      const fx = Math.max(srcX, Math.min(maxX, srcX + ((x - x0 + 0.5) * srcW / rw) - 0.5));
       const xa = Math.floor(fx);
-      const xb = Math.min(sw - 1, xa + 1);
+      const xb = Math.min(maxX, xa + 1);
       const tx = fx - xa;
       const aa = (ya * sw + xa) * 4;
       const ab = (ya * sw + xb) * 4;
@@ -239,10 +249,18 @@ export class ActiveBezelCompositor {
     return this.textures.delete(handle) ? 1 : 0;
   }
 
-  drawTexture(handle, x, y, w, h) {
+  drawTexture(handle, x, y, w, h, sx, sy, sw, sh) {
     const texture = this.textures.get(handle);
     if (!texture) return 0;
-    this.drawSurface(texture.pixels, texture.width, texture.height, x, y, w, h);
+    // A source rect of (0,0,0,0) means "whole texture" so the 5-arg form and
+    // every existing package keep working unchanged.
+    const useSrc = (sw ?? 0) > 0 && (sh ?? 0) > 0;
+    this._push({
+      kind: 'surface', pixels: texture.pixels,
+      width: texture.width, height: texture.height,
+      x, y, w, h,
+      ...(useSrc ? { sx: sx | 0, sy: sy | 0, sw: sw | 0, sh: sh | 0 } : {}),
+    });
     return 1;
   }
 

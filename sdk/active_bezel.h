@@ -59,6 +59,16 @@ AB_IMPORT("ab_host", "command_scissor_reset") extern void ab_scissor_reset(void)
 AB_IMPORT("ab_host", "texture_create_rgba") extern int32_t ab_texture_create_rgba(const void *, int32_t, int32_t);
 AB_IMPORT("ab_host", "texture_destroy") extern int32_t ab_texture_destroy(int32_t);
 AB_IMPORT("ab_host", "command_draw_texture") extern int32_t ab_draw_texture(int32_t, double, double, double, double);
+/* Draw a SUB-RECTANGLE of a texture: (sx,sy,sw,sh) in texture pixels. Lets a
+ * guest keep one atlas and draw entries from it, instead of one texture per
+ * entry -- the difference between a command per tile and a command per pixel. */
+AB_IMPORT("ab_host", "command_draw_texture_rect") extern int32_t ab_draw_texture_rect(int32_t, double, double, double, double, int32_t, int32_t, int32_t, int32_t);
+/* Read THIS frame's game picture. Needed to match the emulator's own colours:
+ * converting a palette index through the guest's NTSC table gives visibly
+ * different RGB, because cores disagree on that decode. Returns 0xRRGGBBAA. */
+AB_IMPORT("ab_host", "game_width") extern int32_t ab_game_width(void);
+AB_IMPORT("ab_host", "game_height") extern int32_t ab_game_height(void);
+AB_IMPORT("ab_host", "game_pixel") extern uint32_t ab_game_pixel(int32_t, int32_t);
 AB_IMPORT("ab_host", "log") extern void ab_log_raw(const char *, int32_t);
 
 static inline int32_t ab_strlen(const char *s) {

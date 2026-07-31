@@ -8,7 +8,7 @@ import { ActiveBezelPackage, validateManifest } from '../src/Package.js';
 import { matchActiveBezel } from '../src/Matcher.js';
 import { ActiveBezelRuntime, AB_EVENT } from '../src/Runtime.js';
 import { ActiveBezelConfig } from '../src/Config.js';
-import { ActiveBezelCompositor } from '../src/Compositor.js';
+import { ActiveBezelCompositor, LOGICAL_WIDTH, LOGICAL_HEIGHT } from '../src/Compositor.js';
 import { ActiveBezelGpuCompositor } from '../src/GpuCompositor.js';
 import { CORE_REGIONS } from '../src/Regions.js';
 import { fileURLToPath } from 'node:url';
@@ -251,6 +251,61 @@ test('command compositor rejects an unbounded guest command stream', () => {
     () => compositor.fillRect(2, 0, 1, 1, 0xffffffff),
     /command limit exceeded/,
   );
+});
+
+test('draw_texture_rect blits a SUB-RECTANGLE of an atlas', () => {
+  // The reason this import exists: a guest with a tilesheet must be able to
+  // draw one entry per command. Without it the only way to draw real pixels is
+  // a command per pixel, which blows the 16k command limit on any busy scene.
+  const c = new ActiveBezelCompositor({ outputWidth: 64, outputHeight: 64 });
+  // 2x1 atlas: left pixel red, right pixel blue.
+  const atlas = new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 255]);
+  const tex = c.createTexture(atlas, 2, 1);
+
+  // Draw ONLY the right half (blue) across the whole output.
+  c.reset();
+  c.drawTexture(tex, 0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, 1, 0, 1, 1);
+  const out = c.compose(new Uint8ClampedArray(4), 1, 1).rgba;
+  assert.deepEqual([out[0], out[1], out[2]], [0, 0, 255], 'sub-rect selected the blue texel');
+
+  // The 5-arg form must still draw the WHOLE texture -- existing packages
+  // depend on it, so the new parameters have to be strictly additive.
+  c.reset();
+  c.drawTexture(tex, 0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+  const whole = c.compose(new Uint8ClampedArray(4), 1, 1).rgba;
+  assert.deepEqual([whole[0], whole[1], whole[2]], [255, 0, 0], 'no source rect still starts at the left texel');
+});
+
+test('a guest can READ the game frame it is compositing', async (t) => {
+  // Why this exists: a package that reconstructs world graphics has to match
+  // the emulator's own colours. Without a read path it can only convert
+  // palette indices through its own table, and cores disagree on that decode --
+  // which put a visibly different shade of sky on each side of the seam in a
+  // real package before this was added.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-gamepx-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const rom = Buffer.from([9, 9, 9, 9]);
+  await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifestFor(rom)));
+  await fs.writeFile(path.join(dir, 'main.wasm'), minimalGuest());
+
+  const runtime = await ActiveBezelRuntime.create({
+    packagePath: dir, host: {}, romBytes: rom, platform: 'nes',
+  });
+
+  // A 2x1 game frame: left pixel opaque red, right pixel opaque green.
+  const frame = new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255]);
+  runtime.processFrame(frame, 2, 1, 0);
+
+  // Call the host imports exactly as the guest would.
+  const host = runtime._hostImports;
+  assert.equal(host.game_width(), 2);
+  assert.equal(host.game_height(), 1);
+  assert.equal(host.game_pixel(0, 0) >>> 0, 0xff0000ff, 'left pixel is opaque red');
+  assert.equal(host.game_pixel(1, 0) >>> 0, 0x00ff00ff, 'right pixel is opaque green');
+  // Out of bounds reads 0 rather than trapping or leaking adjacent memory.
+  assert.equal(host.game_pixel(2, 0), 0, 'x past the edge');
+  assert.equal(host.game_pixel(0, 5), 0, 'y past the edge');
+  assert.equal(host.game_pixel(-1, 0), 0, 'negative coordinates');
 });
 
 test('OpenGL command compositor matches CPU reference and releases resources', (t) => {
