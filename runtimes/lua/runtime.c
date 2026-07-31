@@ -386,7 +386,7 @@ static int l_image(lua_State *S) {
  * couple of draw calls, not hundreds.
  */
 #define FONT_MAX 8
-#define FONT_SIZE_CACHE 6
+#define FONT_SIZE_CACHE 16
 #define ATLAS_PX 1024
 typedef struct {
   int32_t px;
@@ -411,10 +411,14 @@ static FontAtlas *font_atlas(Font *font, int32_t px) {
   if (font->used < FONT_SIZE_CACHE) {
     slot = &font->sizes[font->used++];
   } else {
-    /* Recycle the oldest slot; a bezel cycling >6 live sizes per font is
-     * doing something the cache should not reward anyway. */
+    /* Recycle the oldest slot -- but do NOT destroy its texture here: glyph
+     * meshes emitted EARLIER THIS FRAME may still reference it, and the
+     * compositor resolves handles at compose time. Destroying mid-frame
+     * turned every already-drawn string into solid boxes (dead handle ==
+     * color-only quads). The stale texture leaks until shutdown; a bezel
+     * cycling >16 live sizes per font is the pathological case and pays
+     * with memory, not with corrupted text. */
     slot = &font->sizes[0];
-    if (slot->texture > 0) ab_texture_destroy(slot->texture);
   }
   unsigned char *alpha = (unsigned char *)malloc(ATLAS_PX * ATLAS_PX);
   unsigned char *rgba = (unsigned char *)malloc(ATLAS_PX * ATLAS_PX * 4);
