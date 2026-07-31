@@ -1,0 +1,5 @@
+# Lua is FETCHED by build.sh at a pinned version and patched in place; the
+# static lib is a build product. Both are reproducible, and neither belongs
+# in the repo or the npm tarball -- the artifact consumers need is main.wasm,
+# which IS committed.
+vendor/

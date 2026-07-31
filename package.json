@@ -32,7 +32,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "check:runtimes": "node scripts/check-runtimes.mjs",
+    "pretest": "node scripts/check-runtimes.mjs",
+    "test": "node --test test/*.test.js",
+    "verify": "npm run check:runtimes && npm test"
   },
   "keywords": [
     "active-bezel",
