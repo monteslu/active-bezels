@@ -227,6 +227,27 @@ export function toGlesShader(source, stage) {
   }
 
   let out = body
+    /*
+     * `#define const` -- yes, really.
+     *
+     * The Cg-to-GLSL ports blank out Cg storage qualifiers they do not need:
+     * `#define static`, `#define inline`, and `#define const`. The first two
+     * are harmless. The third is not, because `const` is a real GLSL qualifier
+     * these shaders also rely on, so a line like
+     *
+     *     static const float mask_grille_avg_color = mask_grille15_avg_color;
+     *
+     * expands to `float x = y;` -- a mutable global initialized from another
+     * global. Desktop GL tolerates it; GLES requires a global initializer to
+     * be a constant expression and rejects it.
+     *
+     * Deleting the define restores the qualifier and the declarations become
+     * the compile-time constants they were written to be. Only the blanking
+     * form is removed; a shader defining `const` to something real is left
+     * alone. Verified against the corpus: strictly more presets compile with
+     * this than without, and none regress.
+     */
+    .replace(/^[ \t]*#[ \t]*define[ \t]+const[ \t]*$/gm, '')
     /* 1.10 spellings, only meaningful in files that declared a desktop version */
     .replace(/\battribute\b/g, 'in')
     .replace(/\bvarying\b/g, stage === 'VERTEX' ? 'out' : 'in')
