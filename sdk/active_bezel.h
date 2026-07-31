@@ -56,6 +56,57 @@ AB_IMPORT("ab_host", "command_triangle") extern void ab_triangle(double, double,
 AB_IMPORT("ab_host", "command_text") extern void ab_text_raw(const char *, int32_t, double, double, double, uint32_t);
 AB_IMPORT("ab_host", "command_scissor") extern void ab_scissor(double, double, double, double);
 AB_IMPORT("ab_host", "command_scissor_reset") extern void ab_scissor_reset(void);
+
+/* --- Transforms ----------------------------------------------------------
+ * A 2D affine stack. Applied to every command as it is submitted, so a
+ * rotation means the same thing on the CPU and GPU backends. A rotated
+ * rectangle is emitted as two triangles rather than silently losing the
+ * rotation. Text and scissor rects are axis-aligned by definition: they
+ * follow translate/scale but are not rotated. */
+/* --- Picture effect ------------------------------------------------------
+ * A GLSL ES 3.00 FRAGMENT shader run over the composed scene. Declare:
+ *   in vec2 v_uv;  out vec4 out_color;
+ * and you may sample `uniform sampler2D u_texture` (the scene) plus
+ * `uniform vec2 u_resolution` and `uniform float u_time` (seconds).
+ *
+ * The filtered result is read back into the authoritative composition, so
+ * screenshots, frame hashes and the livestream all see the same pixels -- an
+ * effect is not display-only. Returns 0 if the shader failed to compile, in
+ * which case the UNFILTERED picture is kept rather than ending the session. */
+AB_IMPORT("ab_host", "effect_set") extern int32_t ab_effect_set_raw(const char *, int32_t);
+AB_IMPORT("ab_host", "effect_clear") extern int32_t ab_effect_clear(void);
+static inline int32_t ab_effect_set(const char *s) { return ab_effect_set_raw(s, ab_strlen(s)); }
+
+/* --- Time ----------------------------------------------------------------
+ * ab_tick's `frame` is the EMULATOR's frame counter, which arrives in jumps:
+ * a host may tick a bezel at 60fps in a window, or hundreds of frames at once
+ * during a scripted step. Animate against these instead.
+ *   ab_elapsed_ms  monotonic milliseconds since ab_init
+ *   ab_delta_ms    milliseconds since the previous tick, clamped to 250 so a
+ *                  long pause cannot teleport an animation forward */
+AB_IMPORT("ab_host", "time_elapsed_ms") extern double ab_elapsed_ms(void);
+AB_IMPORT("ab_host", "time_delta_ms") extern double ab_delta_ms(void);
+
+AB_IMPORT("ab_host", "command_push_transform") extern int32_t ab_push_transform(void);
+AB_IMPORT("ab_host", "command_pop_transform") extern int32_t ab_pop_transform(void);
+AB_IMPORT("ab_host", "command_reset_transform") extern void ab_reset_transform(void);
+AB_IMPORT("ab_host", "command_translate") extern void ab_translate(double, double);
+AB_IMPORT("ab_host", "command_scale") extern void ab_scale(double, double);
+AB_IMPORT("ab_host", "command_rotate") extern void ab_rotate(double);
+
+/* --- Geometry batches ----------------------------------------------------
+ * Triangles with per-vertex colour and optional UVs, submitted as ONE command
+ * instead of N. That matters: the host caps a frame at 16384 commands, and a
+ * gradient or polygon fan drawn one triangle at a time burns through it.
+ * Pass handle 0 for untextured (vertex colour), or a texture handle to sample.
+ * Every three vertices form a triangle. */
+typedef struct {
+  float x, y;      /* logical canvas coordinates */
+  float u, v;      /* texture coordinates, 0..1 (ignored when handle == 0) */
+  uint32_t rgba;   /* 0xRRGGBBAA, interpolated across the triangle */
+  uint32_t _pad;
+} ab_vertex;
+AB_IMPORT("ab_host", "command_mesh") extern int32_t ab_mesh(const ab_vertex *, int32_t, int32_t);
 AB_IMPORT("ab_host", "texture_create_rgba") extern int32_t ab_texture_create_rgba(const void *, int32_t, int32_t);
 AB_IMPORT("ab_host", "texture_destroy") extern int32_t ab_texture_destroy(int32_t);
 AB_IMPORT("ab_host", "command_draw_texture") extern int32_t ab_draw_texture(int32_t, double, double, double, double);

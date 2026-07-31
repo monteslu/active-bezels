@@ -46,19 +46,35 @@ function logicalRect(rect, dw, dh) {
   };
 }
 
-function blitNearest(src, sw, sh, dst, dw, dh, rect) {
-  const { x0, y0, x1, y1 } = logicalRect(rect, dw, dh);
-  const rw = Math.max(1, x1 - x0);
-  const rh = Math.max(1, y1 - y0);
+function blitNearest(src, sw, sh, dst, dw, dh, rect, clip) {
+  /* The scissor applies to TEXTURES too. It never did: the blitters took no
+   * clip argument, so a package that scissored a region and then drew a
+   * texture straddling its edge painted straight over the boundary. That is
+   * how a tile that should have been clipped at the strip edge ended up on top
+   * of the live game frame. */
+  let { x0, y0, x1, y1 } = logicalRect(rect, dw, dh);
+  if (clip) {
+    const c = logicalRect(clip, dw, dh);
+    x0 = Math.max(x0, c.x0); y0 = Math.max(y0, c.y0);
+    x1 = Math.min(x1, c.x1); y1 = Math.min(y1, c.y1);
+    if (x1 <= x0 || y1 <= y0) return;
+  }
+  /* Sampling is parameterised by the FULL destination rect, not the clipped
+   * one -- otherwise clipping an image would stretch what remains instead of
+   * cropping it. */
+  const full = logicalRect(rect, dw, dh);
+  const rw = Math.max(1, full.x1 - full.x0);
+  const rh = Math.max(1, full.y1 - full.y0);
+  const ox = full.x0, oy = full.y0;
   // Optional SOURCE sub-rectangle. Without it a texture can only ever be drawn
   // whole, which forces atlas users into one texture per sprite -- and for a
   // tile renderer that means one command per PIXEL instead of per tile.
   const srcX = rect.sx ?? 0, srcY = rect.sy ?? 0;
   const srcW = rect.sw ?? sw, srcH = rect.sh ?? sh;
   for (let y = y0; y < y1; y++) {
-    const sy = Math.min(sh - 1, srcY + Math.floor((y - y0) * srcH / rh));
+    const sy = Math.min(sh - 1, srcY + Math.floor((y - oy) * srcH / rh));
     for (let x = x0; x < x1; x++) {
-      const sx = Math.min(sw - 1, srcX + Math.floor((x - x0) * srcW / rw));
+      const sx = Math.min(sw - 1, srcX + Math.floor((x - ox) * srcW / rw));
       const si = (sy * sw + sx) * 4;
       const di = (y * dw + x) * 4;
       const a = src[si + 3] / 255;
@@ -75,8 +91,19 @@ function blitNearest(src, sw, sh, dst, dw, dh, rect) {
   }
 }
 
-function blitLinear(src, sw, sh, dst, dw, dh, rect) {
-  const { x0, y0, x1, y1 } = logicalRect(rect, dw, dh);
+function blitLinear(src, sw, sh, dst, dw, dh, rect, clip) {
+  /* The scissor applies to TEXTURES too. It never did: the blitters took no
+   * clip argument, so a package that scissored a region and then drew a
+   * texture straddling its edge painted straight over the boundary. That is
+   * how a tile that should have been clipped at the strip edge ended up on top
+   * of the live game frame. */
+  let { x0, y0, x1, y1 } = logicalRect(rect, dw, dh);
+  if (clip) {
+    const c = logicalRect(clip, dw, dh);
+    x0 = Math.max(x0, c.x0); y0 = Math.max(y0, c.y0);
+    x1 = Math.min(x1, c.x1); y1 = Math.min(y1, c.y1);
+    if (x1 <= x0 || y1 <= y0) return;
+  }
   const rw = Math.max(1, x1 - x0);
   const rh = Math.max(1, y1 - y0);
   // Source sub-rectangle, as in blitNearest. Sampling is clamped INSIDE the
@@ -85,12 +112,12 @@ function blitLinear(src, sw, sh, dst, dw, dh, rect) {
   const srcW = rect.sw ?? sw, srcH = rect.sh ?? sh;
   const maxX = srcX + srcW - 1, maxY = srcY + srcH - 1;
   for (let y = y0; y < y1; y++) {
-    const fy = Math.max(srcY, Math.min(maxY, srcY + ((y - y0 + 0.5) * srcH / rh) - 0.5));
+    const fy = Math.max(srcY, Math.min(maxY, srcY + ((y - oy + 0.5) * srcH / rh) - 0.5));
     const ya = Math.floor(fy);
     const yb = Math.min(maxY, ya + 1);
     const ty = fy - ya;
     for (let x = x0; x < x1; x++) {
-      const fx = Math.max(srcX, Math.min(maxX, srcX + ((x - x0 + 0.5) * srcW / rw) - 0.5));
+      const fx = Math.max(srcX, Math.min(maxX, srcX + ((x - ox + 0.5) * srcW / rw) - 0.5));
       const xa = Math.floor(fx);
       const xb = Math.min(maxX, xa + 1);
       const tx = fx - xa;
@@ -122,6 +149,56 @@ function drawRect(dst, dw, dh, rect, rgba, clip) {
 
 function edge(ax, ay, bx, by, px, py) {
   return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+/*
+ * A triangle with per-vertex colour, and optionally per-vertex UVs into a
+ * texture. Barycentric interpolation, same edge test as the flat rasteriser so
+ * the two agree on coverage.
+ */
+function drawMeshTriangle(dst, dw, dh, v0, v1, v2, tex, clip) {
+  const sx = dw / LOGICAL_WIDTH;
+  const sy = dh / LOGICAL_HEIGHT;
+  const ax = v0.x * sx, ay = v0.y * sy;
+  const bx = v1.x * sx, by = v1.y * sy;
+  const cx = v2.x * sx, cy = v2.y * sy;
+  const clipping = clip ? logicalRect(clip, dw, dh) : { x0: 0, y0: 0, x1: dw, y1: dh };
+  const minX = Math.max(clipping.x0, Math.floor(Math.min(ax, bx, cx)));
+  const maxX = Math.min(clipping.x1 - 1, Math.ceil(Math.max(ax, bx, cx)));
+  const minY = Math.max(clipping.y0, Math.floor(Math.min(ay, by, cy)));
+  const maxY = Math.min(clipping.y1 - 1, Math.ceil(Math.max(ay, by, cy)));
+  const area = edge(ax, ay, bx, by, cx, cy);
+  if (area === 0) return;
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const px = x + 0.5, py = y + 0.5;
+      const w0 = edge(bx, by, cx, cy, px, py);
+      const w1 = edge(cx, cy, ax, ay, px, py);
+      const w2 = edge(ax, ay, bx, by, px, py);
+      const inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+      if (!inside) continue;
+      const l0 = w0 / area, l1 = w1 / area, l2 = w2 / area;
+      let r, g, b, a;
+      if (tex) {
+        const u = l0 * (v0.u ?? 0) + l1 * (v1.u ?? 0) + l2 * (v2.u ?? 0);
+        const vv = l0 * (v0.v ?? 0) + l1 * (v1.v ?? 0) + l2 * (v2.v ?? 0);
+        const tx = Math.min(tex.width - 1, Math.max(0, Math.floor(u * tex.width)));
+        const ty = Math.min(tex.height - 1, Math.max(0, Math.floor(vv * tex.height)));
+        const ti = (ty * tex.width + tx) * 4;
+        r = tex.pixels[ti]; g = tex.pixels[ti + 1]; b = tex.pixels[ti + 2]; a = tex.pixels[ti + 3];
+      } else {
+        const c0 = v0.rgba >>> 0, c1 = v1.rgba >>> 0, c2 = v2.rgba >>> 0;
+        r = l0 * ((c0 >>> 24) & 255) + l1 * ((c1 >>> 24) & 255) + l2 * ((c2 >>> 24) & 255);
+        g = l0 * ((c0 >>> 16) & 255) + l1 * ((c1 >>> 16) & 255) + l2 * ((c2 >>> 16) & 255);
+        b = l0 * ((c0 >>> 8) & 255) + l1 * ((c1 >>> 8) & 255) + l2 * ((c2 >>> 8) & 255);
+        a = l0 * (c0 & 255) + l1 * (c1 & 255) + l2 * (c2 & 255);
+      }
+      if (a <= 0) continue;
+      blendPixel(dst, (y * dw + x) * 4,
+        (((Math.round(r) & 255) << 24) | ((Math.round(g) & 255) << 16)
+         | ((Math.round(b) & 255) << 8) | (Math.round(a) & 255)) >>> 0);
+    }
+  }
 }
 
 function drawTriangle(dst, dw, dh, command, clip) {
@@ -176,22 +253,14 @@ const FONT = Object.freeze({
   Y: ['101','101','010','010','010'], Z: ['111','001','010','100','111'],
 });
 
+const GLYPH_ROWS = 5;
+const GLYPH_COLS = 3;
+const GLYPH_ADVANCE = 4;   /* 3 columns + 1 of spacing */
+
 function drawText(dst, dw, dh, command, clip) {
-  const scale = Math.max(1, command.size / 5);
-  let cursor = command.x;
-  for (const raw of command.text) {
-    const glyph = FONT[raw.toUpperCase()] ?? FONT['?'];
-    for (let row = 0; row < 5; row++) {
-      for (let col = 0; col < 3; col++) {
-        if (glyph[row][col] === '1') {
-          drawRect(dst, dw, dh, {
-            x: cursor + col * scale, y: command.y + row * scale, w: scale, h: scale,
-          }, command.rgba, clip);
-        }
-      }
-    }
-    cursor += 4 * scale;
-  }
+  forEachGlyphRect(command, (x, y, w, h) => {
+    drawRect(dst, dw, dh, { x, y, w, h }, command.rgba, clip);
+  });
 }
 
 export class ActiveBezelCompositor {
@@ -207,6 +276,8 @@ export class ActiveBezelCompositor {
 
   reset() {
     this.clearColor = 0x000000ff;
+    this.transform = [1, 0, 0, 1, 0, 0];
+    this.transformStack = [];
     this.commands = [];
   }
 
@@ -214,11 +285,145 @@ export class ActiveBezelCompositor {
     this.clearColor = parseColor(color);
   }
 
-  _push(command) {
-    if (this.commands.length >= this.maxCommands) {
-      throw new Error(`Active Bezel command limit exceeded (${this.maxCommands})`);
+  /*
+   * The transform stack.
+   *
+   * A 2x3 affine matrix [a, b, c, d, e, f] mapping
+   *   x' = a*x + c*y + e
+   *   y' = b*x + d*y + f
+   *
+   * Applied HERE, at the single push chokepoint, rather than in each backend:
+   * every command kind and both backends get transforms for free, and the two
+   * cannot disagree about what a rotation means. Commands are stored already
+   * transformed, so a compositor never has to know a stack existed.
+   */
+  pushTransform() {
+    this.transformStack.push([...this.transform]);
+    return this.transformStack.length;
+  }
+
+  popTransform() {
+    if (this.transformStack.length) this.transform = this.transformStack.pop();
+    return this.transformStack.length;
+  }
+
+  resetTransform() {
+    this.transform = [1, 0, 0, 1, 0, 0];
+    this.transformStack.length = 0;
+  }
+
+  /* this.transform = this.transform * m  (m applied first, then the existing) */
+  _concat(m) {
+    const t = this.transform;
+    this.transform = [
+      t[0] * m[0] + t[2] * m[1],
+      t[1] * m[0] + t[3] * m[1],
+      t[0] * m[2] + t[2] * m[3],
+      t[1] * m[2] + t[3] * m[3],
+      t[0] * m[4] + t[2] * m[5] + t[4],
+      t[1] * m[4] + t[3] * m[5] + t[5],
+    ];
+  }
+
+  translate(x, y) { this._concat([1, 0, 0, 1, x, y]); }
+  scale(x, y) { this._concat([x, 0, 0, y === undefined ? x : y, 0, 0]); }
+  rotate(radians) {
+    const c = Math.cos(radians); const sn = Math.sin(radians);
+    this._concat([c, sn, -sn, c, 0, 0]);
+  }
+
+  _identityTransform() {
+    const t = this.transform;
+    return t[0] === 1 && t[1] === 0 && t[2] === 0 && t[3] === 1 && t[4] === 0 && t[5] === 0;
+  }
+
+  _point(x, y) {
+    const t = this.transform;
+    return [t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5]];
+  }
+
+  /*
+   * Apply the current transform to a command.
+   *
+   * An axis-aligned rect stays a rect under translate/scale, so those keep
+   * their fast rect path. Anything with rotation or skew is converted to two
+   * triangles, because a rotated "rect" is not a rect and drawing it as one
+   * would silently ignore the rotation.
+   */
+  _transformCommand(command) {
+    if (this._identityTransform()) return [command];
+    const t = this.transform;
+    const rotated = t[1] !== 0 || t[2] !== 0;
+    const k = command.kind;
+
+    if (k === 'triangle') {
+      const [x1, y1] = this._point(command.x1, command.y1);
+      const [x2, y2] = this._point(command.x2, command.y2);
+      const [x3, y3] = this._point(command.x3, command.y3);
+      return [{ ...command, x1, y1, x2, y2, x3, y3 }];
     }
-    this.commands.push(command);
+    if (k === 'mesh') {
+      const verts = command.vertices.map((v) => {
+        const [x, y] = this._point(v.x, v.y);
+        return { ...v, x, y };
+      });
+      return [{ ...command, vertices: verts }];
+    }
+    if (k === 'text' || k === 'scissor' || k === 'scissor-reset' || k === 'game-fit') {
+      /* Text and clipping are axis-aligned by definition; translate/scale the
+       * origin but do not attempt to rotate them. */
+      if (command.x === undefined) return [command];
+      const [x, y] = this._point(command.x, command.y);
+      const sizeScale = Math.abs(t[0]) || 1;
+      return [{ ...command, x, y,
+        ...(command.w !== undefined ? { w: command.w * t[0], h: command.h * t[3] } : {}),
+        ...(k === 'text' ? { size: command.size * sizeScale } : {}) }];
+    }
+    if (command.x === undefined || command.w === undefined) return [command];
+
+    if (!rotated) {
+      const [x, y] = this._point(command.x, command.y);
+      const w = command.w * t[0];
+      const h = command.h * t[3];
+      return [{ ...command, x, y, w, h }];
+    }
+
+    /* Rotated: emit the quad's two triangles. Textured kinds keep their UVs so
+     * a rotated sprite still samples correctly. */
+    const [ax, ay] = this._point(command.x, command.y);
+    const [bx, by] = this._point(command.x + command.w, command.y);
+    const [cx, cy] = this._point(command.x + command.w, command.y + command.h);
+    const [dx, dy] = this._point(command.x, command.y + command.h);
+    if (k === 'rect') {
+      return [
+        { kind: 'triangle', x1: ax, y1: ay, x2: bx, y2: by, x3: cx, y3: cy, rgba: command.rgba },
+        { kind: 'triangle', x1: ax, y1: ay, x2: cx, y2: cy, x3: dx, y3: dy, rgba: command.rgba },
+      ];
+    }
+    return [{ ...command, quad: [ax, ay, bx, by, cx, cy, dx, dy] }];
+  }
+
+  _push(command) {
+    for (const out of this._transformCommand(command)) {
+      if (this.commands.length >= this.maxCommands) {
+        throw new Error(`Active Bezel command limit exceeded (${this.maxCommands})`);
+      }
+      this.commands.push(out);
+    }
+  }
+
+  /*
+   * A batch of triangles with per-vertex colour and optional UVs.
+   *
+   * `vertices` is a flat list of {x, y, rgba, u, v}; every three make a
+   * triangle. One command instead of N keeps a gradient, a polygon fan or a
+   * textured mesh inside the command budget -- the same reason the tile
+   * renderer needed draw_texture_rect.
+   */
+  mesh(vertices, handle) {
+    if (!Array.isArray(vertices) || vertices.length < 3) return 0;
+    this._push({ kind: 'mesh', vertices, handle: handle ?? 0 });
+    return 1;
   }
 
   drawGame(x, y, w, h, sampling = 0) {
@@ -255,8 +460,14 @@ export class ActiveBezelCompositor {
     // A source rect of (0,0,0,0) means "whole texture" so the 5-arg form and
     // every existing package keep working unchanged.
     const useSrc = (sw ?? 0) > 0 && (sh ?? 0) > 0;
+    // kind:'texture' (not 'surface') so the GPU backend can use the PERSISTENT
+    // texture it uploaded at createTexture time. Emitting 'surface' made the
+    // GPU path re-upload the whole atlas through the shared game texture every
+    // single draw -- and that branch ignored the source rect, so an atlas blit
+    // came out as noise while the CPU path was correct.
     this._push({
-      kind: 'surface', pixels: texture.pixels,
+      kind: 'texture', handle,
+      pixels: texture.pixels,
       width: texture.width, height: texture.height,
       x, y, w, h,
       ...(useSrc ? { sx: sx | 0, sy: sy | 0, sw: sw | 0, sh: sh | 0 } : {}),
@@ -329,16 +540,27 @@ export class ActiveBezelCompositor {
     for (const command of commands) {
       if (command.kind === 'game') {
         (command.sampling ? blitLinear : blitNearest)(
-          gamePixels, gameWidth, gameHeight, this.output, this.outputWidth, this.outputHeight, command,
+          gamePixels, gameWidth, gameHeight,
+          this.output, this.outputWidth, this.outputHeight, command, clip,
         );
-      } else if (command.kind === 'surface') {
+      } else if (command.kind === 'surface' || command.kind === 'texture') {
+        /* Both carry pixels + an optional source rect; the CPU backend blits
+         * them identically. The distinction only matters to the GPU backend,
+         * which keeps a persistent texture for 'texture'. */
         (command.sampling ? blitLinear : blitNearest)(
-          command.pixels, command.width, command.height, this.output, this.outputWidth, this.outputHeight, command,
+          command.pixels, command.width, command.height,
+          this.output, this.outputWidth, this.outputHeight, command, clip,
         );
       } else if (command.kind === 'rect') {
         drawRect(this.output, this.outputWidth, this.outputHeight, command, command.rgba, clip);
       } else if (command.kind === 'triangle') {
         drawTriangle(this.output, this.outputWidth, this.outputHeight, command, clip);
+      } else if (command.kind === 'mesh') {
+        const tex = command.handle ? this.textures.get(command.handle) : null;
+        for (let i = 0; i + 2 < command.vertices.length; i += 3) {
+          drawMeshTriangle(this.output, this.outputWidth, this.outputHeight,
+            command.vertices[i], command.vertices[i + 1], command.vertices[i + 2], tex, clip);
+        }
       } else if (command.kind === 'text') {
         drawText(this.output, this.outputWidth, this.outputHeight, command, clip);
       } else if (command.kind === 'scissor') {
@@ -351,4 +573,29 @@ export class ActiveBezelCompositor {
   }
 }
 
-export { LOGICAL_WIDTH, LOGICAL_HEIGHT };
+/* The bitmap font and its layout constants are exported so the GPU backend can
+ * emit the IDENTICAL glyph rectangles as geometry instead of re-rasterising the
+ * whole scene on the CPU and blending it over. Sharing the table is what keeps
+ * the two backends pixel-identical for text. */
+export { LOGICAL_WIDTH, LOGICAL_HEIGHT, FONT, GLYPH_ROWS, GLYPH_COLS, GLYPH_ADVANCE };
+
+/*
+ * Walk a text command's glyphs, calling `emit(x, y, w, h)` for every lit cell.
+ * Both backends drive their own rectangle drawing from this one traversal, so
+ * a change to spacing or glyph shape cannot desync them.
+ */
+export function forEachGlyphRect(command, emit) {
+  const scale = Math.max(1, command.size / GLYPH_ROWS);
+  let cursor = command.x;
+  for (const raw of command.text) {
+    const glyph = FONT[raw.toUpperCase()] ?? FONT['?'];
+    for (let row = 0; row < GLYPH_ROWS; row++) {
+      for (let col = 0; col < GLYPH_COLS; col++) {
+        if (glyph[row][col] === '1') {
+          emit(cursor + col * scale, command.y + row * scale, scale, scale);
+        }
+      }
+    }
+    cursor += GLYPH_ADVANCE * scale;
+  }
+}

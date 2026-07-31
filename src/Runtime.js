@@ -6,6 +6,17 @@ import { ActiveBezelRegions } from './Regions.js';
 import { ActiveBezelCompositor, LOGICAL_WIDTH, LOGICAL_HEIGHT } from './Compositor.js';
 import { ActiveBezelGpuCompositor } from './GpuCompositor.js';
 
+/*
+ * Longest tick delta a guest is ever told about.
+ *
+ * A bezel is ticked from several paths: a playtest window at ~60fps, or
+ * frame({op:'step'}) running hundreds of frames in a burst, or once per
+ * screenshot. Real gaps between ticks can therefore be seconds. Reporting them
+ * raw makes any delta-driven animation lurch. Matches wasmcart's MAX_DELTA_MS
+ * so the two runtimes behave the same under a pause.
+ */
+export const MAX_DELTA_MS = 250;
+
 export const AB_EVENT = Object.freeze({
   RESET: 1,
   STATE_LOADED: 2,
@@ -157,6 +168,62 @@ export class ActiveBezelRuntime {
         command_scissor: (x, y, width, height) =>
           this.compositor.scissor(x, y, width, height),
         command_scissor_reset: () => this.compositor.resetScissor(),
+        // --- Transforms ---------------------------------------------------
+        // Applied at the compositor's single push chokepoint, so every command
+        // kind and both backends honour them identically.
+        // --- Time ---------------------------------------------------------
+        // `frame` alone is not enough to animate against: a bezel is ticked
+        // from several paths (a playtest window at ~60fps, frame({op:'step'})
+        // in bursts of hundreds, once per capture), so frame numbers arrive in
+        // jumps. Anything animated off the frame counter runs at a different
+        // speed depending on how the host happens to be driving it.
+        //
+        // elapsed_ms is monotonic wall-clock since ab_init; delta_ms is the gap
+        // since the previous tick, clamped so a long pause (a breakpoint, a
+        // stepped burst) cannot teleport an animation.
+        // --- Picture effect ----------------------------------------------
+        // A fragment shader run over the COMPOSED scene. The result is read
+        // back into the authoritative RGBA composition, so screenshots, frame
+        // hashes, the livestream and a window all observe the same filtered
+        // pixels -- the effect is not a display-only flourish.
+        //
+        // Returns 0 if the shader failed to compile; the unfiltered picture is
+        // kept rather than throwing, because a bad shader must not end an
+        // emulation session mid-play.
+        effect_set: (ptr, length) => {
+          if (typeof this.compositor.setEffect !== 'function') return 0;
+          const src = readGuestString(this, ptr, length);
+          return this.compositor.setEffect(src || null);
+        },
+        effect_clear: () => (typeof this.compositor.setEffect === 'function'
+          ? this.compositor.setEffect(null) : 0),
+        time_elapsed_ms: () => this._elapsedMs,
+        time_delta_ms: () => this._deltaMs,
+        command_push_transform: () => this.compositor.pushTransform(),
+        command_pop_transform: () => this.compositor.popTransform(),
+        command_reset_transform: () => this.compositor.resetTransform(),
+        command_translate: (x, y) => this.compositor.translate(x, y),
+        command_scale: (x, y) => this.compositor.scale(x, y),
+        command_rotate: (radians) => this.compositor.rotate(radians),
+        // --- Geometry batches ---------------------------------------------
+        // `ptr` is an array of `count` vertices, each 6 x f32:
+        //   x, y, u, v, rgba(as f32 bits reinterpreted), pad
+        // One command instead of N keeps a gradient / polygon fan / textured
+        // mesh inside the 16k command budget.
+        command_mesh: (ptr, count, handle) => {
+          const memory = this.instance?.exports?.memory;
+          if (!memory || count < 3) return 0;
+          const stride = 24;
+          if (ptr < 0 || ptr + count * stride > memory.buffer.byteLength) return 0;
+          const f = new Float32Array(memory.buffer, ptr, count * 6);
+          const u = new Uint32Array(memory.buffer, ptr, count * 6);
+          const verts = [];
+          for (let i = 0; i < count; i++) {
+            const o = i * 6;
+            verts.push({ x: f[o], y: f[o + 1], u: f[o + 2], v: f[o + 3], rgba: u[o + 4] >>> 0 });
+          }
+          return this.compositor.mesh(verts, handle);
+        },
         texture_create_rgba: (ptr, width, height) => {
           const memory = this.instance?.exports?.memory;
           const length = width * height * 4;
@@ -228,6 +295,23 @@ export class ActiveBezelRuntime {
     this._gamePixels = gameRgba;
     this._gameWidth = gameWidth;
     this._gameHeight = gameHeight;
+    {
+      const now = performance.now();
+      if (this._tickStartMs === undefined) {
+        this._tickStartMs = now;
+        this._lastTickMs = now;
+      }
+      const raw = Math.max(0, now - this._lastTickMs);
+      this._deltaMs = raw > MAX_DELTA_MS ? MAX_DELTA_MS : raw;
+      // Advance the epoch by whatever was clamped away, so elapsed_ms stays
+      // consistent with the sum of the deltas. Without this an animation driven
+      // by elapsed teleports across a pause while one driven by delta does not,
+      // and the two silently disagree. (Same fix wasmcart's CartHost applies.)
+      if (raw > MAX_DELTA_MS) this._tickStartMs += raw - MAX_DELTA_MS;
+      this._elapsedMs = now - this._tickStartMs;
+      this._lastTickMs = now;
+      if (this.compositor) this.compositor.effectTimeMs = this._elapsedMs;
+    }
     this.compositor.reset();
     const started = performance.now();
     try {

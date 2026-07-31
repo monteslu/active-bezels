@@ -332,6 +332,65 @@
         "i32"
       ],
       "result": "i32"
+    },
+    "command_push_transform": {
+      "params": [],
+      "result": "i32"
+    },
+    "command_pop_transform": {
+      "params": [],
+      "result": "i32"
+    },
+    "command_reset_transform": {
+      "params": [],
+      "result": null
+    },
+    "command_translate": {
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "result": null
+    },
+    "command_scale": {
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "result": null
+    },
+    "command_rotate": {
+      "params": [
+        "f64"
+      ],
+      "result": null
+    },
+    "command_mesh": {
+      "params": [
+        "i32",
+        "i32",
+        "i32"
+      ],
+      "result": "i32"
+    },
+    "time_elapsed_ms": {
+      "params": [],
+      "result": "f64"
+    },
+    "time_delta_ms": {
+      "params": [],
+      "result": "f64"
+    },
+    "effect_set": {
+      "params": [
+        "i32",
+        "i32"
+      ],
+      "result": "i32"
+    },
+    "effect_clear": {
+      "params": [],
+      "result": "i32"
     }
   },
   "events": {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { ActiveBezelPackage, validateManifest } from '../src/Package.js';
 import { matchActiveBezel } from '../src/Matcher.js';
-import { ActiveBezelRuntime, AB_EVENT } from '../src/Runtime.js';
+import { ActiveBezelRuntime, AB_EVENT, MAX_DELTA_MS } from '../src/Runtime.js';
 import { ActiveBezelConfig } from '../src/Config.js';
 import { ActiveBezelCompositor, LOGICAL_WIDTH, LOGICAL_HEIGHT } from '../src/Compositor.js';
 import { ActiveBezelGpuCompositor } from '../src/GpuCompositor.js';
@@ -346,6 +346,124 @@ test('OpenGL command compositor matches CPU reference and releases resources', (
   assert.ok(error / samples < 0.3, `mean channel error ${error / samples}`);
   gpu.destroy();
   assert.equal(gpu.gpuReady, false);
+});
+
+test('GPU renders text as geometry, pixel-identical to the CPU reference', (t) => {
+  // Text used to be handled by re-composing the WHOLE scene on a second CPU
+  // compositor and blending it over the GL readback: +4.4 ms/frame measured at
+  // 1080p, a 2.2x penalty for a single string. It is now batched geometry.
+  // This asserts the two backends still agree EXACTLY -- the glyph cells must
+  // land on the same device-pixel grid, which GL does not do by default
+  // (it fills only pixels whose centre is covered).
+  const opts = { outputWidth: 320, outputHeight: 180 };
+  const gpu = ActiveBezelGpuCompositor.create(opts);
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  const cpu = new ActiveBezelCompositor(opts);
+  const game = new Uint8Array(4);
+  const draw = (c) => {
+    c.reset();
+    c.clear(0x000000ff);
+    c.text('ABC 019 XYZ', 100, 200, 60, 0xff8800ff);
+    return c.compose(game, 1, 1).rgba;
+  };
+  const a = draw(cpu);
+  const b = draw(gpu);
+  let lit = 0;
+  for (let i = 0; i < a.length; i += 4) if (a[i] > 100) lit++;
+  assert.ok(lit > 100, 'control: the text actually drew something on the CPU reference');
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
+  assert.equal(diff, 0, 'CPU and GPU text must be pixel-identical');
+  gpu.destroy();
+});
+
+test('transforms and mesh batches match between CPU and GPU', (t) => {
+  // Transforms are applied at the single _push chokepoint, so BOTH backends
+  // receive already-transformed commands and cannot disagree about what a
+  // rotation means. A rotated rect is no longer a rect, so it is emitted as
+  // two triangles rather than silently losing the rotation.
+  const opts = { outputWidth: 200, outputHeight: 120 };
+  const gpu = ActiveBezelGpuCompositor.create(opts);
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  const cpu = new ActiveBezelCompositor(opts);
+  const game = new Uint8Array(4);
+  const scene = (c) => {
+    c.reset();
+    c.clear(0x000000ff);
+    c.fillRect(100, 100, 400, 300, 0xff0000ff);
+    c.pushTransform(); c.translate(600, 100); c.scale(2, 1);
+    c.fillRect(0, 0, 200, 200, 0x00ff00ff);
+    c.popTransform();
+    c.pushTransform(); c.translate(1200, 500); c.rotate(Math.PI / 6);
+    c.fillRect(-100, -100, 200, 200, 0x0000ffff);
+    c.popTransform();
+    c.mesh([
+      { x: 200, y: 600, rgba: 0xff0000ff },
+      { x: 600, y: 600, rgba: 0x00ff00ff },
+      { x: 400, y: 950, rgba: 0x0000ffff },
+    ]);
+    return c.compose(game, 1, 1).rgba;
+  };
+  const a = scene(cpu);
+  const b = scene(gpu);
+  let lit = 0;
+  for (let i = 0; i < a.length; i += 4) if (a[i] || a[i + 1] || a[i + 2]) lit++;
+  assert.ok(lit > 1000, 'control: the scene actually drew something');
+  // Gouraud interpolation differs by at most 1/255 (GPU interpolates in float,
+  // the CPU rasteriser rounds). Anything larger is a real geometry mismatch.
+  let worst = 0;
+  for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+  assert.ok(worst <= 1, `CPU/GPU differ by ${worst}, expected <= 1 (rounding only)`);
+  gpu.destroy();
+});
+
+test('the transform stack restores exactly', () => {
+  const c = new ActiveBezelCompositor({ outputWidth: 32, outputHeight: 18 });
+  c.reset();
+  c.pushTransform();
+  c.translate(100, 50);
+  c.rotate(1.1);
+  c.scale(3, 4);
+  c.popTransform();
+  c.fillRect(10, 20, 30, 40, 0xffffffff);
+  const cmd = c.commands[c.commands.length - 1];
+  assert.deepEqual([cmd.x, cmd.y, cmd.w, cmd.h], [10, 20, 30, 40],
+    'after pop, geometry must be untransformed');
+});
+
+test('a long stall is clamped, and elapsed stays consistent with the deltas', async (t) => {
+  // The scenario: a bezel is ticked from a playtest window at ~60fps, but a
+  // host may also step hundreds of emulator frames at once, or pause while a
+  // window is covered. Real gaps between ticks can be seconds. Reporting them
+  // raw makes any delta-driven animation lurch, and leaves elapsed_ms
+  // disagreeing with the sum of the deltas.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-time-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const rom = Buffer.from([3, 1, 4, 1]);
+  await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifestFor(rom)));
+  await fs.writeFile(path.join(dir, 'main.wasm'), minimalGuest());
+  const runtime = await ActiveBezelRuntime.create({
+    packagePath: dir, host: {}, romBytes: rom, platform: 'nes',
+  });
+  const frame = new Uint8ClampedArray(4);
+  const host = runtime._hostImports;
+
+  runtime.processFrame(frame, 1, 1, 0);
+  const t0 = host.time_elapsed_ms();
+
+  // Simulate a long stall by rewinding the runtime's own clock references,
+  // which is what a real multi-second pause looks like from inside.
+  runtime._lastTickMs -= 4000;
+  runtime._tickStartMs -= 4000;
+  runtime.processFrame(frame, 1, 1, 1);
+
+  const delta = host.time_delta_ms();
+  const elapsed = host.time_elapsed_ms();
+  assert.ok(delta <= MAX_DELTA_MS, `delta ${delta} must be clamped to ${MAX_DELTA_MS}`);
+  // The epoch is advanced by whatever was clamped away, so elapsed must NOT
+  // have jumped the full 4 seconds either.
+  assert.ok(elapsed - t0 <= MAX_DELTA_MS + 50,
+    `elapsed jumped ${elapsed - t0}ms; it must track the clamped delta, not wall clock`);
 });
 
 test('canonical region catalog uses stable unique ids and names', () => {
