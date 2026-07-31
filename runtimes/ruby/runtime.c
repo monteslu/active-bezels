@@ -218,6 +218,33 @@ static double hash_num(mrb_state *m, mrb_value hash, const char *key, double fal
  * textured quad, corners clockwise from top-left. A tilt drawn this way
  * reads as a receding plane; the same corners through mesh() warp like a
  * PS1 polygon. */
+/* --- offscreen surfaces -------------------------------------------------- */
+static mrb_value ab_m_surface_create(mrb_state *m, mrb_value self) {
+  mrb_int w, h;
+  mrb_get_args(m, "ii", &w, &h);
+  (void)self;
+  return mrb_int_value(m, ab_surface_create((int32_t)w, (int32_t)h));
+}
+static mrb_value ab_m_surface_target(mrb_state *m, mrb_value self) {
+  mrb_int handle;
+  mrb_get_args(m, "i", &handle);
+  (void)self;
+  return mrb_int_value(m, ab_surface_target((int32_t)handle));
+}
+static mrb_value ab_m_surface_end(mrb_state *m, mrb_value self) {
+  (void)self;
+  return mrb_int_value(m, ab_surface_end());
+}
+static mrb_value ab_m_surface_filter(mrb_state *m, mrb_value self) {
+  mrb_int src, dst;
+  const char *shader;
+  mrb_int len;
+  mrb_get_args(m, "iis", &src, &dst, &shader, &len);
+  (void)self;
+  return mrb_int_value(m, ab_surface_filter_raw((int32_t)src, (int32_t)dst,
+                                                shader, (int32_t)len));
+}
+
 static mrb_value ab_m_quad(mrb_state *m, mrb_value self) {
   mrb_value corners;
   mrb_int texture = 0;
@@ -622,6 +649,10 @@ static const ab_binding AB_FUNCS[] = {
   { "skew", ab_m_skew, MRB_ARGS_ARG(1, 1) },
   { "transform2d", ab_m_transform2d, MRB_ARGS_REQ(6) },
   { "quad", ab_m_quad, MRB_ARGS_ARG(1, 2) },
+  { "surface_create", ab_m_surface_create, MRB_ARGS_REQ(2) },
+  { "surface_target", ab_m_surface_target, MRB_ARGS_REQ(1) },
+  { "surface_end", ab_m_surface_end, MRB_ARGS_NONE() },
+  { "surface_filter", ab_m_surface_filter, MRB_ARGS_REQ(3) },
   { "mesh", ab_m_mesh, MRB_ARGS_ARG(1, 1) },
   { "texture_create", ab_m_texture_create, MRB_ARGS_REQ(3) },
   { "texture_destroy", ab_m_texture_destroy, MRB_ARGS_REQ(1) },
@@ -706,6 +737,9 @@ static void define_ab_module(mrb_state *m) {
     { "UP", 4 }, { "DOWN", 5 }, { "LEFT", 6 }, { "RIGHT", 7 },
     { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 }, { "MASK", 256 },
   };
+  /* AB::GAME: pass as a texture handle to sample the LIVE GAME FRAME, e.g.
+   * AB.quad(corners, AB::GAME) maps the running game onto a tilted plane. */
+  mrb_define_const(m, ab, "GAME", mrb_int_value(m, -1));
   define_const_hash(m, ab, "EVENT", EVENT, (int)(sizeof(EVENT) / sizeof(EVENT[0])));
   define_const_hash(m, ab, "FIT", FIT, (int)(sizeof(FIT) / sizeof(FIT[0])));
   define_const_hash(m, ab, "SAMPLE", SAMPLE, (int)(sizeof(SAMPLE) / sizeof(SAMPLE[0])));

@@ -514,6 +514,11 @@ export class ActiveBezelCompositor {
    * Falls back to a plain affine mesh when the diagonals are parallel (a
    * parallelogram), where the two are identical anyway.
    */
+  /* Pass this as quad()'s handle to map the LIVE GAME FRAME onto the quad
+   * instead of a texture. A game is not a texture handle -- it arrives as
+   * pixels each frame -- so it needs a sentinel rather than an id. */
+  static get GAME_TEXTURE() { return -1; }
+
   quad(corners, handle, rgba = 0xffffffff) {
     if (!Array.isArray(corners) || corners.length !== 4) return 0;
     const [tl, tr, br, bl] = corners;
@@ -540,6 +545,56 @@ export class ActiveBezelCompositor {
       v(tl, 0, 0, 0), v(br, 1, 1, 2), v(bl, 0, 1, 3),
     ] });
     return 1;
+  }
+
+  /* --- Offscreen surfaces --------------------------------------------------
+   *
+   * A surface is a guest-allocated render target that persists across frames.
+   * It can be drawn into like the screen, filtered with its own shader, and
+   * then used anywhere a texture handle is accepted -- draw_texture, mesh,
+   * quad.
+   *
+   * This exists because the scene-wide effect pass runs LAST, over the
+   * finished composition. That is wrong for a bezel that puts the game
+   * inside an object: filtering there filters the object too, and any warp
+   * in the shader fights the perspective the game was already mapped
+   * through. Rendering to a surface filters FIRST, flat, at the source's own
+   * scale -- so a CRT shader behaves the way it was written to, on an
+   * upright picture -- and the geometry happens exactly once, afterwards.
+   *
+   * The CPU compositor has no shader stage, so surfaceFilter reports failure
+   * rather than quietly returning an unfiltered picture that would look like
+   * the effect ran and did nothing.
+   */
+  surfaceCreate(width, height) {
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+      || width <= 0 || height <= 0 || width * height > 16_777_216) return 0;
+    const handle = this.nextTexture++;
+    this.textures.set(handle, {
+      pixels: new Uint8Array(width * height * 4),
+      width,
+      height,
+      surface: true,
+    });
+    return handle;
+  }
+
+  /* Direct subsequent draw commands into `handle` instead of the screen. */
+  surfaceTarget(handle) {
+    const target = this.textures.get(handle);
+    if (!target || !target.surface) return 0;
+    this._push({ kind: 'surface-target', handle });
+    return 1;
+  }
+
+  surfaceEnd() {
+    this._push({ kind: 'surface-end' });
+    return 1;
+  }
+
+  surfaceFilter(source, destination, shaderSource) {
+    void source; void destination; void shaderSource;
+    return 0;                          /* no shader stage on the CPU path */
   }
 
   drawGame(x, y, w, h, sampling = 0) {
@@ -679,7 +734,10 @@ export class ActiveBezelCompositor {
       } else if (command.kind === 'triangle') {
         drawTriangle(this.output, this.outputWidth, this.outputHeight, command, clip);
       } else if (command.kind === 'mesh') {
-        const tex = command.handle ? this.textures.get(command.handle) : null;
+        /* handle -1 means the live game frame; anything else is a texture. */
+        const tex = command.handle === -1
+          ? { pixels: gamePixels, width: gameWidth, height: gameHeight }
+          : (command.handle ? this.textures.get(command.handle) : null);
         for (let i = 0; i + 2 < command.vertices.length; i += 3) {
           drawMeshTriangle(this.output, this.outputWidth, this.outputHeight,
             command.vertices[i], command.vertices[i + 1], command.vertices[i + 2], tex, clip);

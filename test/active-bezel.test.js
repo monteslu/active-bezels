@@ -691,6 +691,84 @@ test('quad() foreshortens the texture, mesh() does not', (t) => {
   gpu.destroy();
 });
 
+test('offscreen surfaces: render, filter, reuse as a texture', (t) => {
+  // A surface is a guest-allocated render target that survives across
+  // frames. The point is ORDER: filter FIRST, flat, at the source's own
+  // scale, then map the result through whatever geometry you like. The
+  // scene-wide effect pass cannot do that -- it runs last, over everything.
+  const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 160, outputHeight: 90 });
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+
+  const surface = gpu.surfaceCreate(64, 64);
+  assert.ok(surface > 0, 'surfaceCreate must return a handle');
+
+  // a red game frame, inverted by the filter into cyan
+  const game = new Uint8Array(8 * 8 * 4);
+  for (let i = 0; i < game.length; i += 4) {
+    game[i] = 200; game[i + 1] = 40; game[i + 2] = 40; game[i + 3] = 255;
+  }
+  const invert = `#version 300 es
+    precision mediump float;
+    in vec2 v_uv; out vec4 out_color;
+    uniform sampler2D u_texture;
+    void main() { vec4 c = texture(u_texture, v_uv); out_color = vec4(1.0 - c.rgb, 1.0); }`;
+
+  gpu.reset(); gpu.clear(0x000000ff);
+  assert.equal(
+    gpu.surfaceFilter(ActiveBezelCompositor.GAME_TEXTURE, surface, invert, game, 8, 8), 1,
+    'surfaceFilter must succeed on the GPU path');
+  gpu.drawTexture(surface, 0, 0, 960, 1080);
+  const out = gpu.compose(game, 8, 8).rgba;
+
+  const at = (x, y) => [...out.subarray((y * 160 + x) * 4, (y * 160 + x) * 4 + 3)];
+  const [r, g, b] = at(40, 45);
+  assert.ok(r < 90 && g > 180 && b > 180,
+    `the filtered surface must draw INVERTED (got ${r},${g},${b})`);
+
+  // a broken shader must fail, not silently pass the picture through
+  assert.equal(gpu.surfaceFilter(ActiveBezelCompositor.GAME_TEXTURE, surface,
+    'void main() { this is not glsl', game, 8, 8), 0,
+    'a bad shader must report failure');
+  gpu.destroy();
+});
+
+test('a surface is not vertically flipped when drawn', (t) => {
+  // Surfaces render into an FBO (rows bottom-up) but every consumer samples
+  // top-down. The first version of this came back upside down AND mirrored
+  // on screen, so the orientation gets an asymmetric test rather than a
+  // symmetric shader that would hide it.
+  const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 160, outputHeight: 90 });
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  const surface = gpu.surfaceCreate(32, 32);
+
+  // source: TOP half red, BOTTOM half blue
+  const src = new Uint8Array(8 * 8 * 4);
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const o = (y * 8 + x) * 4;
+      const top = y < 4;
+      src[o] = top ? 220 : 20; src[o + 1] = 20;
+      src[o + 2] = top ? 20 : 220; src[o + 3] = 255;
+    }
+  }
+  const passthrough = `#version 300 es
+    precision mediump float;
+    in vec2 v_uv; out vec4 out_color;
+    uniform sampler2D u_texture;
+    void main() { out_color = texture(u_texture, v_uv); }`;
+
+  gpu.reset(); gpu.clear(0x000000ff);
+  assert.equal(gpu.surfaceFilter(ActiveBezelCompositor.GAME_TEXTURE, surface,
+    passthrough, src, 8, 8), 1);
+  gpu.drawTexture(surface, 0, 0, 1920, 1080);
+  const out = gpu.compose(src, 8, 8).rgba;
+  const at = (x, y) => [...out.subarray((y * 160 + x) * 4, (y * 160 + x) * 4 + 3)];
+  const top = at(80, 15), bottom = at(80, 75);
+  assert.ok(top[0] > top[2], `top must stay RED (got ${top})`);
+  assert.ok(bottom[2] > bottom[0], `bottom must stay BLUE (got ${bottom})`);
+  gpu.destroy();
+});
+
 test('a picture effect filters the scene without flipping it', (t) => {
   const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 192, outputHeight: 108 });
   if (!gpu) return t.skip('OpenGL ES context unavailable');

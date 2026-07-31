@@ -135,6 +135,30 @@ static int l_transform2d(lua_State *S) {
   return 0;
 }
 
+/* --- offscreen surfaces --------------------------------------------------
+ * surface_create(w, h) -> handle
+ * surface_target(handle) / surface_end()  -- draw into it
+ * surface_filter(source, destination, glsl) -- run a shader between them
+ * The handle works anywhere a texture does. ab.GAME as a source means the
+ * live frame. */
+static int l_surface_create(lua_State *S) {
+  lua_pushinteger(S, ab_surface_create((int32_t)luaL_checkinteger(S, 1),
+                                       (int32_t)luaL_checkinteger(S, 2)));
+  return 1;
+}
+static int l_surface_target(lua_State *S) {
+  lua_pushinteger(S, ab_surface_target((int32_t)luaL_checkinteger(S, 1)));
+  return 1;
+}
+static int l_surface_end(lua_State *S) { lua_pushinteger(S, ab_surface_end()); return 1; }
+static int l_surface_filter(lua_State *S) {
+  size_t n = 0;
+  const char *shader = luaL_checklstring(S, 3, &n);
+  lua_pushinteger(S, ab_surface_filter_raw((int32_t)luaL_checkinteger(S, 1),
+    (int32_t)luaL_checkinteger(S, 2), shader, (int32_t)n));
+  return 1;
+}
+
 /* quad({{x=,y=}, ...4}, texture, rgba) -- perspective-correct textured quad,
  * corners clockwise from top-left. This is how a tilted surface reads as a
  * plane instead of a PS1 warp. */
@@ -470,6 +494,10 @@ static const luaL_Reg AB_FUNCS[] = {
   { "skew", l_skew },
   { "transform2d", l_transform2d },
   { "quad", l_quad },
+  { "surface_create", l_surface_create },
+  { "surface_target", l_surface_target },
+  { "surface_end", l_surface_end },
+  { "surface_filter", l_surface_filter },
   { "mesh", l_mesh },
   { "texture_create", l_texture_create },
   { "texture_destroy", l_texture_destroy },
@@ -582,6 +610,10 @@ static void boot(void) {
   /* Constant tables so scripts never hard-code ABI numbers. Mirrors the C
    * SDK's AB_* defines; button ids are the libretro joypad numbering the
    * input_state import speaks. */
+  /* ab.GAME: pass as a texture handle to sample the LIVE GAME FRAME, e.g.
+   * ab.quad(corners, ab.GAME) maps the running game onto a tilted plane. */
+  lua_pushinteger(L, -1);
+  lua_setfield(L, -2, "GAME");
   {
     static const struct { const char *name; lua_Integer value; } EVENT[] = {
       { "RESET", 1 }, { "STATE_LOADED", 2 }, { "REWIND_JUMP", 3 },

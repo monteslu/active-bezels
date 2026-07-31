@@ -228,6 +228,11 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     this.vao = vao[0];
     this.vbo = vbo[0];
     this.gameTexture = this._newTexture();
+    /* handle -> {fbo, texture, width, height}; allocated once, reused */
+    this.surfaces = new Map();
+    /* shader source -> compiled program (or null for a known failure), so a
+     * per-frame surfaceFilter call does not recompile every frame */
+    this.filterPrograms = new Map();
     this.readback = new Uint8Array(this.output.length);
 
     /*
@@ -294,6 +299,107 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     return ids[0];
   }
 
+  /* --- Offscreen surfaces --------------------------------------------------
+   * A surface is an FBO plus its colour texture, allocated once and reused
+   * every frame. It is a first-class render target: draw into it, run a
+   * shader over it, then use its handle anywhere a texture is accepted.
+   */
+  surfaceCreate(width, height) {
+    const handle = super.surfaceCreate(width, height);
+    if (!handle || !this.gpuReady) return handle;
+    gl.makeCurrent?.();
+    const texture = this._newTexture();
+    gl.glBindTexture(C.TEXTURE_2D, texture);
+    gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.LINEAR);
+    gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.LINEAR);
+    gl.glTexImage2D(C.TEXTURE_2D, 0, C.RGBA, width, height, 0, C.RGBA, C.UNSIGNED_BYTE, null);
+    const fbo = new Uint32Array(1);
+    gl.glGenFramebuffers(1, fbo);
+    gl.glBindFramebuffer(C.FRAMEBUFFER, fbo[0]);
+    gl.glFramebufferTexture2D(C.FRAMEBUFFER, C.COLOR_ATTACHMENT0, C.TEXTURE_2D, texture, 0);
+    const ok = gl.glCheckFramebufferStatus(C.FRAMEBUFFER) === C.FRAMEBUFFER_COMPLETE;
+    gl.glBindFramebuffer(C.FRAMEBUFFER, 0);
+    if (!ok) {
+      gl.glDeleteFramebuffers(1, fbo);
+      gl.glDeleteTextures(1, new Uint32Array([texture]));
+      this.textures.delete(handle);
+      return 0;
+    }
+    this.gpuTextures.set(handle, texture);
+    this.surfaces.set(handle, { fbo: fbo[0], texture, width, height });
+    return handle;
+  }
+
+  /* Run `shaderSource` over `source` and write the result into `destination`.
+   * Both are surface or texture handles; source may be GAME_TEXTURE (-1).
+   * Shaders are compiled once and cached, since a bezel calls this every
+   * frame with the same source. */
+  surfaceFilter(source, destination, shaderSource, gamePixels, gameWidth, gameHeight) {
+    if (!this.gpuReady) return 0;
+    const target = this.surfaces.get(destination);
+    if (!target) return 0;
+    gl.makeCurrent?.();
+
+    let entry = this.filterPrograms.get(shaderSource);
+    if (entry === undefined) {
+      try {
+        entry = { program: program(shaderSource) };
+      } catch (err) {
+        entry = null;                  /* remember the failure; do not retry */
+        process.env.RETROEMU_DEBUG && console.error(`[active-bezel] surface filter: ${err.message}`);
+        this.effectError = String(err.message || err);
+      }
+      this.filterPrograms.set(shaderSource, entry);
+    }
+    if (!entry) return 0;
+
+    let sourceTexture;
+    let sw = target.width, sh = target.height;
+    if (source === -1) {
+      sourceTexture = this.gameTexture;
+      gl.glActiveTexture(C.TEXTURE0);
+      gl.glBindTexture(C.TEXTURE_2D, sourceTexture);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.NEAREST);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.NEAREST);
+      gl.glTexImage2D(C.TEXTURE_2D, 0, C.RGBA, gameWidth, gameHeight,
+        0, C.RGBA, C.UNSIGNED_BYTE, gamePixels);
+      sw = gameWidth; sh = gameHeight;
+    } else {
+      sourceTexture = this.gpuTextures.get(source);
+      const meta = this.textures.get(source);
+      if (meta) { sw = meta.width; sh = meta.height; }
+    }
+    if (!sourceTexture) return 0;
+
+    gl.glBindFramebuffer(C.FRAMEBUFFER, target.fbo);
+    gl.glViewport(0, 0, target.width, target.height);
+    gl.glDisable(C.BLEND);
+    gl.glClearColor(0, 0, 0, 0);
+    gl.glClear(C.COLOR_BUFFER_BIT);
+    gl.glUseProgram(entry.program);
+    gl.glActiveTexture(C.TEXTURE0);
+    gl.glBindTexture(C.TEXTURE_2D, sourceTexture);
+    /* Flip V.
+     *
+     * A surface is rendered into an FBO, whose rows run bottom-up, but every
+     * consumer -- draw_texture, mesh, quad -- samples top-down like an
+     * uploaded image. Without this the filtered picture comes back upside
+     * down AND mirrored, which is exactly what the tube showed the first
+     * time. Same class of bug as the scene effect pass; fixed the same way,
+     * at the one place that knows the target is an FBO. */
+    this._geometry(entry.program,
+      quad(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, { u0: 0, v0: 1, u1: 1, v1: 0 }));
+    const u = (name) => gl.glGetUniformLocation(entry.program, name);
+    gl.glUniform1i(u('u_texture'), 0);
+    gl.glUniform2f(u('u_resolution'), target.width, target.height);
+    gl.glUniform2f(u('u_source_size'), sw, sh);
+    gl.glUniform1f(u('u_time'), (this.effectTimeMs ?? 0) / 1000);
+    gl.glDrawArrays(C.TRIANGLES, 0, 6);
+    gl.glEnable(C.BLEND);
+    gl.glBindFramebuffer(C.FRAMEBUFFER, 0);
+    return 1;
+  }
+
   createTexture(pixels, width, height) {
     const handle = super.createTexture(pixels, width, height);
     if (handle && this.gpuReady) this._uploadPersistent(handle);
@@ -355,7 +461,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   }
 
   /* Triangles with per-vertex colour (and optional texture), one draw call. */
-  _drawMesh(command) {
+  _drawMesh(command, gamePixels, gameWidth, gameHeight) {
     const verts = new Float32Array(command.vertices.length * 9);
     for (let i = 0; i < command.vertices.length; i++) {
       const v = command.vertices[i];
@@ -370,7 +476,20 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       verts[o + 7] = (c & 255) / 255;
       verts[o + 8] = v.w ?? 1;
     }
-    const id = command.handle ? this.gpuTextures.get(command.handle) : null;
+    /* handle -1 means the live game frame: upload it into the shared game
+     * texture, the same one drawGame uses, and sample that. */
+    let id;
+    if (command.handle === -1) {
+      id = this.gameTexture;
+      gl.glActiveTexture(C.TEXTURE0);
+      gl.glBindTexture(C.TEXTURE_2D, id);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.NEAREST);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.NEAREST);
+      gl.glTexImage2D(C.TEXTURE_2D, 0, C.RGBA, gameWidth, gameHeight,
+        0, C.RGBA, C.UNSIGNED_BYTE, gamePixels);
+    } else {
+      id = command.handle ? this.gpuTextures.get(command.handle) : null;
+    }
     if (id) {
       gl.glActiveTexture(C.TEXTURE0);
       gl.glBindTexture(C.TEXTURE_2D, id);
@@ -487,7 +606,34 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     gl.glEnable(C.BLEND);
     gl.glBlendFunc(C.SRC_ALPHA, C.ONE_MINUS_SRC_ALPHA);
     let clip = null;
+    /* Drawing into a surface swaps the render target mid-stream; the stack
+     * lets a bezel nest them (compose into A, then use A while filling B). */
+    const targetStack = [];
+    const bindTarget = () => {
+      const top = targetStack[targetStack.length - 1];
+      if (top) {
+        gl.glBindFramebuffer(C.FRAMEBUFFER, top.fbo);
+        gl.glViewport(0, 0, top.width, top.height);
+      } else {
+        gl.glBindFramebuffer(C.FRAMEBUFFER, this.effect ? this.sceneFbo : 0);
+        gl.glViewport(0, 0, this.outputWidth, this.outputHeight);
+      }
+    };
     for (const command of this.commands) {
+      if (command.kind === 'surface-target') {
+        const target = this.surfaces.get(command.handle);
+        if (target) {
+          targetStack.push(target);
+          bindTarget();
+          gl.glClearColor(0, 0, 0, 0);
+          gl.glClear(C.COLOR_BUFFER_BIT);
+        }
+        continue;
+      } else if (command.kind === 'surface-end') {
+        targetStack.pop();
+        bindTarget();
+        continue;
+      }
       if (command.kind === 'scissor') {
         clip = command;
         gl.glEnable(C.SCISSOR_TEST);
@@ -514,7 +660,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
           x1, y1, 0, 0, x2, y2, 0, 0, x3, y3, 0, 0,
         ]), command.rgba);
       } else if (command.kind === 'mesh') {
-        this._drawMesh(command);
+        this._drawMesh(command, gamePixels, gameWidth, gameHeight);
       } else if (command.kind === 'text') {
         /* Text as GEOMETRY, batched into one draw call.
          *
@@ -592,6 +738,14 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   destroy() {
     if (this.gpuReady) {
       for (const id of this.gpuTextures.values()) gl.glDeleteTextures(1, new Uint32Array([id]));
+      for (const surface of this.surfaces.values()) {
+        gl.glDeleteFramebuffers(1, new Uint32Array([surface.fbo]));
+      }
+      this.surfaces.clear();
+      for (const entry of this.filterPrograms.values()) {
+        if (entry) gl.glDeleteProgram(entry.program);
+      }
+      this.filterPrograms.clear();
       if (this.gameTexture) gl.glDeleteTextures(1, new Uint32Array([this.gameTexture]));
       if (this.vbo) gl.glDeleteBuffers(1, new Uint32Array([this.vbo]));
       if (this.vao) gl.glDeleteVertexArrays(1, new Uint32Array([this.vao]));

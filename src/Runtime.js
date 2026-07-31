@@ -208,6 +208,18 @@ export class ActiveBezelRuntime {
         command_rotate: (radians) => this.compositor.rotate(radians),
         command_skew: (x, y) => this.compositor.skew(x, y),
         command_transform2d: (a, b, c, d, e, f) => this.compositor.transform2d(a, b, c, d, e, f),
+        /* --- offscreen surfaces: real render targets for the guest -------- */
+        surface_create: (w, h) => this.compositor.surfaceCreate(w, h),
+        surface_target: (handle) => this.compositor.surfaceTarget(handle),
+        surface_end: () => this.compositor.surfaceEnd(),
+        surface_filter: (source, destination, ptr, length) => {
+          const src = readGuestString(this, ptr, length);
+          if (!src) return 0;
+          /* The GPU path needs the live frame in case source is GAME_TEXTURE;
+           * the CPU path ignores the extras and reports failure. */
+          return this.compositor.surfaceFilter(source, destination, src,
+            this._gamePixels, this._gameWidth, this._gameHeight);
+        },
         command_quad: (ptr, handle, rgba) => {
           /* eight doubles: tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y */
           const memory = this.instance?.exports?.memory;

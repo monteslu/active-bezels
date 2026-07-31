@@ -120,6 +120,33 @@ static inline int32_t ab_quad(const ab_point *corners, int32_t handle, uint32_t 
   return ab_quad_raw(corners, handle, rgba);
 }
 
+/* --- Offscreen surfaces --------------------------------------------------
+ * A surface is a render target the guest allocates and REUSES across frames.
+ * Draw into it, run a shader over it, then use its handle anywhere a texture
+ * is accepted -- ab_draw_texture, ab_mesh, ab_quad.
+ *
+ * Why this exists: ab_effect_set runs over the FINISHED scene, which is the
+ * wrong stage for a bezel that puts the game inside an object. Filtering
+ * there filters the object too, and a warp in the shader fights whatever
+ * perspective the game was already mapped through. Filter into a surface
+ * instead and the shader runs flat, at the source's own scale, exactly as it
+ * was written; the geometry then happens once, afterwards.
+ *
+ * A shader used here gets `u_texture`, `u_resolution` (the destination),
+ * `u_source_size` (the source, in texels) and `u_time`. */
+AB_IMPORT("ab_host", "surface_create") extern int32_t ab_surface_create(int32_t w, int32_t h);
+AB_IMPORT("ab_host", "surface_target") extern int32_t ab_surface_target(int32_t handle);
+AB_IMPORT("ab_host", "surface_end") extern int32_t ab_surface_end(void);
+AB_IMPORT("ab_host", "surface_filter")
+extern int32_t ab_surface_filter_raw(int32_t source, int32_t destination,
+                                     const char *shader, int32_t length);
+static inline int32_t ab_surface_filter(int32_t source, int32_t destination, const char *shader) {
+  return ab_surface_filter_raw(source, destination, shader, ab_strlen(shader));
+}
+
+/* Pass as a source/texture handle to mean THE LIVE GAME FRAME. */
+#define AB_GAME_TEXTURE (-1)
+
 /* --- Geometry batches ----------------------------------------------------
  * Triangles with per-vertex colour and optional UVs, submitted as ONE command
  * instead of N. That matters: the host caps a frame at 16384 commands, and a

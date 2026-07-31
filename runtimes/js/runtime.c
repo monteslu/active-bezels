@@ -218,6 +218,30 @@ AB_FN(js_transform2d) {
 /* ab.quad([{x,y} x4][, texture][, rgba]) -- perspective-correct textured
  * quad, corners clockwise from top-left. A tilt drawn this way reads as a
  * receding plane; the same corners through mesh() warp like a PS1 polygon. */
+/* --- offscreen surfaces -------------------------------------------------- */
+AB_FN(js_surface_create) {
+  AB_UNUSED();
+  return JS_NewInt32(ctx, ab_surface_create((int32_t)arg_num(ctx, argv[0], 0),
+                                            (int32_t)arg_num(ctx, argv[1], 0)));
+}
+AB_FN(js_surface_target) {
+  AB_UNUSED();
+  return JS_NewInt32(ctx, ab_surface_target((int32_t)arg_num(ctx, argv[0], 0)));
+}
+AB_FN(js_surface_end) { AB_UNUSED(); return JS_NewInt32(ctx, ab_surface_end()); }
+AB_FN(js_surface_filter) {
+  size_t len = 0;
+  const char *shader;
+  int32_t result;
+  AB_UNUSED();
+  shader = JS_ToCStringLen(ctx, &len, argv[2]);
+  if (!shader) return JS_EXCEPTION;
+  result = ab_surface_filter_raw((int32_t)arg_num(ctx, argv[0], 0),
+                                 (int32_t)arg_num(ctx, argv[1], 0), shader, (int32_t)len);
+  JS_FreeCString(ctx, shader);
+  return JS_NewInt32(ctx, result);
+}
+
 AB_FN(js_quad) {
   ab_point pts[4];
   int64_t i;
@@ -702,6 +726,10 @@ static const JSCFunctionListEntry AB_FUNCS[] = {
   JS_CFUNC_DEF("skew", 2, js_skew),
   JS_CFUNC_DEF("transform2d", 6, js_transform2d),
   JS_CFUNC_DEF("quad", 3, js_quad),
+  JS_CFUNC_DEF("surface_create", 2, js_surface_create),
+  JS_CFUNC_DEF("surface_target", 1, js_surface_target),
+  JS_CFUNC_DEF("surface_end", 0, js_surface_end),
+  JS_CFUNC_DEF("surface_filter", 3, js_surface_filter),
   JS_CFUNC_DEF("mesh", 2, js_mesh),
   JS_CFUNC_DEF("texture_create", 3, js_texture_create),
   JS_CFUNC_DEF("texture_destroy", 1, js_texture_destroy),
@@ -907,6 +935,9 @@ static void boot(void) {
       { "UP", 4 }, { "DOWN", 5 }, { "LEFT", 6 }, { "RIGHT", 7 },
       { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 }, { "MASK", 256 },
     };
+    /* ab.GAME: pass as a texture handle to sample the LIVE GAME FRAME, e.g.
+     * ab.quad(corners, ab.GAME) maps the running game onto a tilted plane. */
+    JS_SetPropertyStr(g_ctx, ab, "GAME", JS_NewInt32(g_ctx, -1));
     define_consts(g_ctx, ab, "EVENT", EVENT, (int)(sizeof(EVENT) / sizeof(EVENT[0])));
     define_consts(g_ctx, ab, "FIT", FIT, (int)(sizeof(FIT) / sizeof(FIT[0])));
     define_consts(g_ctx, ab, "SAMPLE", SAMPLE, (int)(sizeof(SAMPLE) / sizeof(SAMPLE[0])));

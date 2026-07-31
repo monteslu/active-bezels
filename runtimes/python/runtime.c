@@ -247,6 +247,27 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_transform2d_obj, 6, 6, ab_transfor
 
 /* quad([(x,y) or {'x':,'y':}] * 4, texture=0, rgba=white) -- perspective
  * correct textured quad, corners clockwise from top-left. */
+/* --- offscreen surfaces -------------------------------------------------- */
+static mp_obj_t ab_surface_create_fn(mp_obj_t w, mp_obj_t h) {
+  return mp_obj_new_int(ab_surface_create(arg_i(w), arg_i(h)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(ab_surface_create_obj, ab_surface_create_fn);
+
+static mp_obj_t ab_surface_target_fn(mp_obj_t handle) {
+  return mp_obj_new_int(ab_surface_target(arg_i(handle)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(ab_surface_target_obj, ab_surface_target_fn);
+
+static mp_obj_t ab_surface_end_fn(void) { return mp_obj_new_int(ab_surface_end()); }
+static MP_DEFINE_CONST_FUN_OBJ_0(ab_surface_end_obj, ab_surface_end_fn);
+
+static mp_obj_t ab_surface_filter_fn(mp_obj_t src, mp_obj_t dst, mp_obj_t shader) {
+  size_t n = 0;
+  const char *s = arg_str(shader, &n);
+  return mp_obj_new_int(ab_surface_filter_raw(arg_i(src), arg_i(dst), s, (int32_t)n));
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(ab_surface_filter_obj, ab_surface_filter_fn);
+
 static mp_obj_t ab_quad_fn(size_t n, const mp_obj_t *a) {
   size_t count = 0;
   mp_obj_t *items = NULL;
@@ -618,6 +639,10 @@ static mp_obj_t build_ab_module(void) {
   ADD("skew", ab_skew_obj);
   ADD("transform2d", ab_transform2d_obj);
   ADD("quad", ab_quad_obj);
+  ADD("surface_create", ab_surface_create_obj);
+  ADD("surface_target", ab_surface_target_obj);
+  ADD("surface_end", ab_surface_end_obj);
+  ADD("surface_filter", ab_surface_filter_obj);
   ADD("mesh", ab_mesh_obj);
   ADD("texture_create", ab_texture_create_obj);
   ADD("texture_destroy", ab_texture_destroy_obj);
@@ -661,6 +686,9 @@ static mp_obj_t build_ab_module(void) {
   ADD("config_string", ab_config_string_obj);
   ADD("rgb", ab_rgb_obj);
 #undef ADD
+  /* ab.GAME: pass as a texture handle to sample the LIVE GAME FRAME, e.g.
+   * ab.quad(corners, ab.GAME) maps the running game onto a tilted plane. */
+  ab_module_add(d, "GAME", mp_obj_new_int(-1));
   ab_module_add(d, "EVENT", make_consts(EVENT_NAMES, EVENT_VALUES, 7));
   ab_module_add(d, "FIT", make_consts(FIT_NAMES, FIT_VALUES, 4));
   ab_module_add(d, "SAMPLE", make_consts(SAMPLE_NAMES, SAMPLE_VALUES, 2));
