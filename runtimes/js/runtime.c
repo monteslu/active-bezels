@@ -200,6 +200,46 @@ AB_FN(js_scale) {
 
 AB_FN(js_rotate) { AB_UNUSED(); ab_rotate(arg_num(ctx, argv[0], 0)); return JS_UNDEFINED; }
 
+/* ab.skew(x, y = 0) -- shear as tangents; skew(Math.PI/6) leans 30 degrees. */
+AB_FN(js_skew) {
+  AB_UNUSED();
+  ab_skew(arg_num(ctx, argv[0], 0), argc > 1 ? arg_num(ctx, argv[1], 0) : 0);
+  return JS_UNDEFINED;
+}
+
+AB_FN(js_transform2d) {
+  AB_UNUSED();
+  ab_transform2d(arg_num(ctx, argv[0], 0), arg_num(ctx, argv[1], 0),
+                 arg_num(ctx, argv[2], 0), arg_num(ctx, argv[3], 0),
+                 arg_num(ctx, argv[4], 0), arg_num(ctx, argv[5], 0));
+  return JS_UNDEFINED;
+}
+
+/* ab.quad([{x,y} x4][, texture][, rgba]) -- perspective-correct textured
+ * quad, corners clockwise from top-left. A tilt drawn this way reads as a
+ * receding plane; the same corners through mesh() warp like a PS1 polygon. */
+AB_FN(js_quad) {
+  ab_point pts[4];
+  int64_t i;
+  int32_t texture;
+  uint32_t rgba;
+  AB_UNUSED();
+
+  if (!JS_IsArray(argv[0]))
+    return JS_ThrowTypeError(ctx, "quad: first argument must be an array of 4 corners");
+  for (i = 0; i < 4; i++) {
+    JSValue corner = JS_GetPropertyUint32(ctx, argv[0], (uint32_t)i);
+    JSValue f;
+    if (JS_IsException(corner)) return JS_EXCEPTION;
+    f = JS_GetPropertyStr(ctx, corner, "x"); pts[i].x = arg_num(ctx, f, 0); JS_FreeValue(ctx, f);
+    f = JS_GetPropertyStr(ctx, corner, "y"); pts[i].y = arg_num(ctx, f, 0); JS_FreeValue(ctx, f);
+    JS_FreeValue(ctx, corner);
+  }
+  texture = argc > 1 ? (int32_t)arg_num(ctx, argv[1], 0) : 0;
+  rgba = argc > 2 ? (uint32_t)arg_num(ctx, argv[2], 0xffffffffu) : 0xffffffffu;
+  return JS_NewInt32(ctx, ab_quad(pts, texture, rgba));
+}
+
 /* ab.mesh([{x, y, rgba, u, v}, ...][, texture]) -> emitted triangle count */
 AB_FN(js_mesh) {
   int64_t count = 0;
@@ -659,6 +699,9 @@ static const JSCFunctionListEntry AB_FUNCS[] = {
   JS_CFUNC_DEF("translate", 2, js_translate),
   JS_CFUNC_DEF("scale", 2, js_scale),
   JS_CFUNC_DEF("rotate", 1, js_rotate),
+  JS_CFUNC_DEF("skew", 2, js_skew),
+  JS_CFUNC_DEF("transform2d", 6, js_transform2d),
+  JS_CFUNC_DEF("quad", 3, js_quad),
   JS_CFUNC_DEF("mesh", 2, js_mesh),
   JS_CFUNC_DEF("texture_create", 3, js_texture_create),
   JS_CFUNC_DEF("texture_destroy", 1, js_texture_destroy),

@@ -123,6 +123,36 @@ static int l_scale(lua_State *S) {
 
 static int l_rotate(lua_State *S) { ab_rotate(luaL_checknumber(S, 1)); return 0; }
 
+/* skew(x[, y]) -- shear as tangents; skew(math.pi/6) leans 30 degrees. */
+static int l_skew(lua_State *S) {
+  ab_skew(luaL_checknumber(S, 1), luaL_optnumber(S, 2, 0));
+  return 0;
+}
+
+static int l_transform2d(lua_State *S) {
+  ab_transform2d(luaL_checknumber(S, 1), luaL_checknumber(S, 2), luaL_checknumber(S, 3),
+                 luaL_checknumber(S, 4), luaL_checknumber(S, 5), luaL_checknumber(S, 6));
+  return 0;
+}
+
+/* quad({{x=,y=}, ...4}, texture, rgba) -- perspective-correct textured quad,
+ * corners clockwise from top-left. This is how a tilted surface reads as a
+ * plane instead of a PS1 warp. */
+static int l_quad(lua_State *S) {
+  luaL_checktype(S, 1, LUA_TTABLE);
+  ab_point pts[4];
+  for (int i = 0; i < 4; i++) {
+    lua_rawgeti(S, 1, i + 1);
+    if (!lua_istable(S, -1)) return luaL_error(S, "quad: corner %d is not a table", i + 1);
+    lua_getfield(S, -1, "x"); pts[i].x = lua_tonumber(S, -1); lua_pop(S, 1);
+    lua_getfield(S, -1, "y"); pts[i].y = lua_tonumber(S, -1); lua_pop(S, 1);
+    lua_pop(S, 1);
+  }
+  lua_pushinteger(S, ab_quad(pts, (int32_t)luaL_optinteger(S, 2, 0),
+    (uint32_t)(lua_Unsigned)luaL_optnumber(S, 3, 4294967295.0)));
+  return 1;
+}
+
 /* mesh{ {x=,y=,rgba=,u=,v=}, ... }[, texture] -> emitted triangle count */
 static int l_mesh(lua_State *S) {
   luaL_checktype(S, 1, LUA_TTABLE);
@@ -437,6 +467,9 @@ static const luaL_Reg AB_FUNCS[] = {
   { "translate", l_translate },
   { "scale", l_scale },
   { "rotate", l_rotate },
+  { "skew", l_skew },
+  { "transform2d", l_transform2d },
+  { "quad", l_quad },
   { "mesh", l_mesh },
   { "texture_create", l_texture_create },
   { "texture_destroy", l_texture_destroy },

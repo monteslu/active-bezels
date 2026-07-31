@@ -206,6 +206,18 @@ export class ActiveBezelRuntime {
         command_translate: (x, y) => this.compositor.translate(x, y),
         command_scale: (x, y) => this.compositor.scale(x, y),
         command_rotate: (radians) => this.compositor.rotate(radians),
+        command_skew: (x, y) => this.compositor.skew(x, y),
+        command_transform2d: (a, b, c, d, e, f) => this.compositor.transform2d(a, b, c, d, e, f),
+        command_quad: (ptr, handle, rgba) => {
+          /* eight doubles: tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y */
+          const memory = this.instance?.exports?.memory;
+          if (!memory || ptr < 0 || ptr + 64 > memory.buffer.byteLength) return 0;
+          const f = new Float64Array(memory.buffer, ptr, 8);
+          return this.compositor.quad([
+            { x: f[0], y: f[1] }, { x: f[2], y: f[3] },
+            { x: f[4], y: f[5] }, { x: f[6], y: f[7] },
+          ], handle, rgba >>> 0);
+        },
         // --- Geometry batches ---------------------------------------------
         // `ptr` is an array of `count` vertices, each 6 x f32:
         //   x, y, u, v, rgba(as f32 bits reinterpreted), pad

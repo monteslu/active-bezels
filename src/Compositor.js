@@ -185,8 +185,16 @@ function drawMeshTriangle(dst, dw, dh, v0, v1, v2, tex, clip) {
       const l0 = w0 / area, l1 = w1 / area, l2 = w2 / area;
       let r, g, b, a;
       if (tex) {
-        const u = l0 * (v0.u ?? 0) + l1 * (v1.u ?? 0) + l2 * (v2.u ?? 0);
-        const vv = l0 * (v0.v ?? 0) + l1 * (v1.v ?? 0) + l2 * (v2.v ?? 0);
+        /* Perspective-correct when the vertices carry a w divisor (quad()
+         * sets it): interpolate u/w, v/w and 1/w linearly in screen space,
+         * then divide. With w = 1 everywhere this reduces exactly to the
+         * affine case, so a plain mesh() is unaffected. */
+        const w0 = v0.w ?? 1, w1 = v1.w ?? 1, w2 = v2.w ?? 1;
+        const iw = l0 / w0 + l1 / w1 + l2 / w2;
+        const u = (l0 * (v0.u ?? 0) / w0 + l1 * (v1.u ?? 0) / w1
+                 + l2 * (v2.u ?? 0) / w2) / iw;
+        const vv = (l0 * (v0.v ?? 0) / w0 + l1 * (v1.v ?? 0) / w1
+                  + l2 * (v2.v ?? 0) / w2) / iw;
         const tx = Math.min(tex.width - 1, Math.max(0, Math.floor(u * tex.width)));
         const ty = Math.min(tex.height - 1, Math.max(0, Math.floor(vv * tex.height)));
         const ti = (ty * tex.width + tx) * 4;
@@ -350,6 +358,22 @@ export class ActiveBezelCompositor {
     this._concat([c, sn, -sn, c, 0, 0]);
   }
 
+  /*
+   * Shear. `x` slides horizontally in proportion to y, `y` vertically in
+   * proportion to x -- both as tangents, so skew(Math.PI/6, 0) leans 30
+   * degrees. The transform stack was always a full 2x3 affine and could
+   * represent this; only the verb was missing.
+   *
+   * A sheared rect is not a rect, so it takes the same path a rotated one
+   * does: real geometry, not a stretched box.
+   */
+  skew(x, y = 0) { this._concat([1, Math.tan(y), Math.tan(x), 1, 0, 0]); }
+
+  /* The escape hatch: concatenate an arbitrary 2x3 affine [a, b, c, d, e, f]
+   * mapping (x, y) -> (a*x + c*y + e, b*x + d*y + f). Everything above is a
+   * named case of this. */
+  transform2d(a, b, c, d, e, f) { this._concat([a, b, c, d, e, f]); }
+
   _identityTransform() {
     const t = this.transform;
     return t[0] === 1 && t[1] === 0 && t[2] === 0 && t[3] === 1 && t[4] === 0 && t[5] === 0;
@@ -371,6 +395,9 @@ export class ActiveBezelCompositor {
   _transformCommand(command) {
     if (this._identityTransform()) return [command];
     const t = this.transform;
+    /* Off-diagonal terms mean rotation OR shear; either way the axis-aligned
+     * fast path would silently drop the transform, so both take the
+     * emit-real-geometry route below. */
     const rotated = t[1] !== 0 || t[2] !== 0;
     const k = command.kind;
 
@@ -468,6 +495,50 @@ export class ActiveBezelCompositor {
   mesh(vertices, handle) {
     if (!Array.isArray(vertices) || vertices.length < 3) return 0;
     this._push({ kind: 'mesh', vertices, handle: handle ?? 0 });
+    return 1;
+  }
+
+  /*
+   * A textured quad with PERSPECTIVE-CORRECT sampling: four corners in any
+   * convex arrangement, the texture mapped as if the quad were a plane in
+   * 3D. This is what makes a tilt read as a receding surface rather than a
+   * PS1-style affine warp.
+   *
+   * `corners` is [tl, tr, br, bl], each {x, y} (UVs are the unit square).
+   * The trick is that a projective map only needs ONE extra number per
+   * vertex: the perspective divisor w. Split the quad on a diagonal and set
+   * each corner's w from where the diagonals cross -- the standard
+   * "quad with correct texture" construction -- then let the existing
+   * mesh path interpolate u/w, v/w and 1/w and divide at the end.
+   *
+   * Falls back to a plain affine mesh when the diagonals are parallel (a
+   * parallelogram), where the two are identical anyway.
+   */
+  quad(corners, handle, rgba = 0xffffffff) {
+    if (!Array.isArray(corners) || corners.length !== 4) return 0;
+    const [tl, tr, br, bl] = corners;
+
+    /* Intersect the diagonals tl->br and tr->bl. */
+    const ax = br.x - tl.x, ay = br.y - tl.y;
+    const bx = bl.x - tr.x, by = bl.y - tr.y;
+    const den = ax * by - ay * bx;
+
+    let w = [1, 1, 1, 1];
+    if (Math.abs(den) > 1e-9) {
+      const s = ((tr.x - tl.x) * by - (tr.y - tl.y) * bx) / den;
+      const t = ((tr.x - tl.x) * ay - (tr.y - tl.y) * ax) / den;
+      /* distances from each corner to the crossing point, along its own
+       * diagonal, give the homogeneous weights */
+      if (s > 1e-9 && s < 1 - 1e-9 && t > 1e-9 && t < 1 - 1e-9) {
+        w = [1 / (1 - s), 1 / (1 - t), 1 / s, 1 / t];
+      }
+    }
+
+    const v = (c, u, vv, k) => ({ x: c.x, y: c.y, u, v: vv, w: w[k], rgba });
+    this._push({ kind: 'mesh', handle: handle ?? 0, vertices: [
+      v(tl, 0, 0, 0), v(tr, 1, 0, 1), v(br, 1, 1, 2),
+      v(tl, 0, 0, 0), v(br, 1, 1, 2), v(bl, 0, 1, 3),
+    ] });
     return 1;
   }
 

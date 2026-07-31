@@ -116,7 +116,21 @@ function tick(frame) {
     ab.draw_texture(logo.texture, PANEL_X, H - 120, logo.width, logo.height);
   }
 
-  // 8. A mesh: per-vertex colours in ONE command. Use this for gradients,
+  // 8. A TILTED surface: four arbitrary corners with perspective-correct
+  //    texturing. quad() foreshortens the texture toward the far edge, so a
+  //    receding plane reads as depth rather than as a PS1-style warp.
+  //    (ab.skew() shears the transform stack if you want a lean instead.)
+  if (logo) {
+    const lean = Math.sin(t * 0.6) * 120;
+    ab.quad([
+      { x: PANEL_X + 120 + lean, y: H - 420 },              // far, narrower
+      { x: PANEL_X + PANEL_W - 120 + lean, y: H - 420 },
+      { x: PANEL_X + PANEL_W, y: H - 200 },                 // near, full width
+      { x: PANEL_X, y: H - 200 },
+    ], logo.texture);
+  }
+
+  // 9. A mesh: per-vertex colours in ONE command. Use this for gradients,
   //    fans, or anything that would otherwise be hundreds of rects.
   ab.mesh([
     { x: PANEL_X,                 y: 300, rgba: ab.rgb(255, 80, 80) },

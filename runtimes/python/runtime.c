@@ -230,6 +230,49 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_scale_obj, 1, 2, ab_scale_fn);
 static mp_obj_t ab_rotate_fn(mp_obj_t r) { ab_rotate(arg_f(r)); return mp_const_none; }
 static MP_DEFINE_CONST_FUN_OBJ_1(ab_rotate_obj, ab_rotate_fn);
 
+/* skew(x, y=0) -- shear as tangents; skew(math.pi/6) leans 30 degrees. */
+static mp_obj_t ab_skew_fn(size_t n, const mp_obj_t *a) {
+  ab_skew(arg_f(a[0]), n > 1 ? arg_f(a[1]) : 0);
+  return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_skew_obj, 1, 2, ab_skew_fn);
+
+static mp_obj_t ab_transform2d_fn(size_t n, const mp_obj_t *a) {
+  (void)n;
+  ab_transform2d(arg_f(a[0]), arg_f(a[1]), arg_f(a[2]),
+                 arg_f(a[3]), arg_f(a[4]), arg_f(a[5]));
+  return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_transform2d_obj, 6, 6, ab_transform2d_fn);
+
+/* quad([(x,y) or {'x':,'y':}] * 4, texture=0, rgba=white) -- perspective
+ * correct textured quad, corners clockwise from top-left. */
+static mp_obj_t ab_quad_fn(size_t n, const mp_obj_t *a) {
+  size_t count = 0;
+  mp_obj_t *items = NULL;
+  mp_obj_get_array(a[0], &count, &items);
+  if (count != 4) mp_raise_ValueError(MP_ERROR_TEXT("quad: need exactly 4 corners"));
+  ab_point pts[4];
+  for (size_t i = 0; i < 4; i++) {
+    mp_obj_t c = items[i];
+    if (mp_obj_is_type(c, &mp_type_dict)) {
+      mp_map_t *m = mp_obj_dict_get_map(c);
+      mp_map_elem_t *e;
+      pts[i].x = (e = dict_get(m, "x")) ? arg_f(e->value) : 0;
+      pts[i].y = (e = dict_get(m, "y")) ? arg_f(e->value) : 0;
+    } else {
+      size_t fn = 0;
+      mp_obj_t *f = NULL;
+      mp_obj_get_array(c, &fn, &f);
+      pts[i].x = fn > 0 ? arg_f(f[0]) : 0;
+      pts[i].y = fn > 1 ? arg_f(f[1]) : 0;
+    }
+  }
+  return mp_obj_new_int(ab_quad(pts, n > 1 ? arg_i(a[1]) : 0,
+    n > 2 ? arg_rgba(a[2]) : 0xffffffffu));
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_quad_obj, 1, 3, ab_quad_fn);
+
 /* mesh(vertices, texture=0): vertices is a sequence of dicts or 5-tuples.
  * Dicts read like pygame-adjacent code; tuples are the fast path. */
 static mp_obj_t ab_mesh_fn(size_t n, const mp_obj_t *a) {
@@ -572,6 +615,9 @@ static mp_obj_t build_ab_module(void) {
   ADD("translate", ab_translate_obj);
   ADD("scale", ab_scale_obj);
   ADD("rotate", ab_rotate_obj);
+  ADD("skew", ab_skew_obj);
+  ADD("transform2d", ab_transform2d_obj);
+  ADD("quad", ab_quad_obj);
   ADD("mesh", ab_mesh_obj);
   ADD("texture_create", ab_texture_create_obj);
   ADD("texture_destroy", ab_texture_destroy_obj);

@@ -189,12 +189,55 @@ static mrb_value ab_m_rotate(mrb_state *m, mrb_value self) {
   return mrb_nil_value();
 }
 
+/* skew(x, y = 0) -- shear as tangents; skew(Math::PI/6) leans 30 degrees. */
+static mrb_value ab_m_skew(mrb_state *m, mrb_value self) {
+  mrb_float x, y = 0;
+  mrb_get_args(m, "f|f", &x, &y);
+  ab_skew(x, y);
+  (void)self;
+  return mrb_nil_value();
+}
+
+static mrb_value ab_m_transform2d(mrb_state *m, mrb_value self) {
+  mrb_float a, b, c, d, e, f;
+  mrb_get_args(m, "ffffff", &a, &b, &c, &d, &e, &f);
+  ab_transform2d(a, b, c, d, e, f);
+  (void)self;
+  return mrb_nil_value();
+}
+
 /* Pull a numeric Hash member with a default, so a vertex may omit u/v. */
 static double hash_num(mrb_state *m, mrb_value hash, const char *key, double fallback) {
   mrb_value v = mrb_hash_get(m, hash, mrb_symbol_value(mrb_intern_cstr(m, key)));
   if (mrb_nil_p(v)) return fallback;
   if (mrb_float_p(v)) return mrb_float(v);
   return (double)mrb_as_int(m, v);
+}
+
+/* quad([{x:,y:} x4], texture = 0, rgba = white) -- perspective-correct
+ * textured quad, corners clockwise from top-left. A tilt drawn this way
+ * reads as a receding plane; the same corners through mesh() warp like a
+ * PS1 polygon. */
+static mrb_value ab_m_quad(mrb_state *m, mrb_value self) {
+  mrb_value corners;
+  mrb_int texture = 0;
+  mrb_value rgba_val = mrb_nil_value();
+  ab_point pts[4];
+  int i;
+  mrb_get_args(m, "A|io", &corners, &texture, &rgba_val);
+  (void)self;
+  if (RARRAY_LEN(corners) != 4)
+    mrb_raise(m, E_ARGUMENT_ERROR, "quad: need exactly 4 corners");
+  for (i = 0; i < 4; i++) {
+    mrb_value c = mrb_ary_ref(m, corners, i);
+    pts[i].x = hash_num(m, c, "x", 0);
+    pts[i].y = hash_num(m, c, "y", 0);
+  }
+  {
+    uint32_t rgba = 0xffffffffu;
+    if (!mrb_nil_p(rgba_val)) rgba = (uint32_t)mrb_as_int(m, rgba_val);
+    return mrb_int_value(m, ab_quad(pts, (int32_t)texture, rgba));
+  }
 }
 
 /* AB.mesh([{x:, y:, rgba:, u:, v:}, ...], texture = 0) -> triangle count */
@@ -576,6 +619,9 @@ static const ab_binding AB_FUNCS[] = {
   { "translate", ab_m_translate, MRB_ARGS_REQ(2) },
   { "scale", ab_m_scale, MRB_ARGS_ARG(1, 1) },
   { "rotate", ab_m_rotate, MRB_ARGS_REQ(1) },
+  { "skew", ab_m_skew, MRB_ARGS_ARG(1, 1) },
+  { "transform2d", ab_m_transform2d, MRB_ARGS_REQ(6) },
+  { "quad", ab_m_quad, MRB_ARGS_ARG(1, 2) },
   { "mesh", ab_m_mesh, MRB_ARGS_ARG(1, 1) },
   { "texture_create", ab_m_texture_create, MRB_ARGS_REQ(3) },
   { "texture_destroy", ab_m_texture_destroy, MRB_ARGS_REQ(1) },

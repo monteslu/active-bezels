@@ -58,16 +58,22 @@ function compile(type, source) {
   return shader;
 }
 
-/* Vertex format for meshes: x, y, u, v, r, g, b, a (8 floats). */
+/* Vertex format for meshes: x, y, u, v, r, g, b, a, w (9 floats). */
 function programVC(fragment) {
   const vertex = compile(C.VERTEX_SHADER, `#version 300 es
     in vec2 a_position;
     in vec2 a_uv;
     in vec4 a_color;
+    in float a_w;
     out vec2 v_uv;
     out vec4 v_color;
     void main() {
-      gl_Position = vec4(a_position.x, -a_position.y, 0.0, 1.0);
+      /* a_w is the perspective divisor quad() computes; premultiplying the
+       * clip position by it and letting the rasteriser divide is exactly
+       * what makes GL interpolate u/w, v/w and 1/w -- perspective-correct
+       * texturing for free. With w = 1 (every ordinary mesh) this is the
+       * identity, so nothing else changes. */
+      gl_Position = vec4(a_position.x * a_w, -a_position.y * a_w, 0.0, a_w);
       v_uv = a_uv;
       v_color = a_color;
     }`);
@@ -334,7 +340,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     gl.glBindVertexArray(this.vao);
     gl.glBindBuffer(C.ARRAY_BUFFER, this.vbo);
     gl.glBufferData(C.ARRAY_BUFFER, new Uint8Array(vertices.buffer), C.STREAM_DRAW);
-    const stride = 32;
+    const stride = 36;                 /* 9 floats: xy, uv, rgba, w */
     const bind = (name, size, offset) => {
       const loc = gl.glGetAttribLocation(programId, name);
       if (loc >= 0) {
@@ -345,22 +351,24 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     bind('a_position', 2, 0);
     bind('a_uv', 2, 8);
     bind('a_color', 4, 16);
+    bind('a_w', 1, 32);
   }
 
   /* Triangles with per-vertex colour (and optional texture), one draw call. */
   _drawMesh(command) {
-    const verts = new Float32Array(command.vertices.length * 8);
+    const verts = new Float32Array(command.vertices.length * 9);
     for (let i = 0; i < command.vertices.length; i++) {
       const v = command.vertices[i];
       const [px, py] = xy(v.x, v.y);
       const c = (v.rgba ?? 0xffffffff) >>> 0;
-      const o = i * 8;
+      const o = i * 9;
       verts[o] = px; verts[o + 1] = py;
       verts[o + 2] = v.u ?? 0; verts[o + 3] = v.v ?? 0;
       verts[o + 4] = ((c >>> 24) & 255) / 255;
       verts[o + 5] = ((c >>> 16) & 255) / 255;
       verts[o + 6] = ((c >>> 8) & 255) / 255;
       verts[o + 7] = (c & 255) / 255;
+      verts[o + 8] = v.w ?? 1;
     }
     const id = command.handle ? this.gpuTextures.get(command.handle) : null;
     if (id) {

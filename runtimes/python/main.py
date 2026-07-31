@@ -17,6 +17,8 @@
 # Errors never kill the session: they land on an on-screen panel, and the
 # runtime re-reads this file when the host reloads assets.
 
+import math
+
 W, H = 1920, 1080
 
 # Put the game on the left, keep a panel on the right. A 4:3 game in a
@@ -119,7 +121,20 @@ def tick(frame):
     if logo:
         ab.draw_texture(logo['texture'], PANEL_X, H - 120, logo['width'], logo['height'])
 
-    # 8. A mesh: per-vertex colours in ONE command. Use this for gradients,
+    # 8. A TILTED surface: four arbitrary corners with perspective-correct
+    #    texturing. quad() foreshortens the texture toward the far edge, so a
+    #    receding plane reads as depth rather than as a PS1-style warp.
+    #    (ab.skew() shears the transform stack if you want a lean instead.)
+    if logo:
+        lean = math.sin(t * 0.6) * 120
+        ab.quad([
+            {'x': PANEL_X + 120 + lean, 'y': H - 420},           # far, narrower
+            {'x': PANEL_X + PANEL_W - 120 + lean, 'y': H - 420},
+            {'x': PANEL_X + PANEL_W, 'y': H - 200},              # near, full width
+            {'x': PANEL_X, 'y': H - 200},
+        ], logo['texture'])
+
+    # 9. A mesh: per-vertex colours in ONE command. Use this for gradients,
     #    fans, or anything that would otherwise be hundreds of rects.
     #    Vertices are dicts (readable) or 5-tuples (x, y, rgba, u, v).
     ab.mesh([

@@ -98,6 +98,28 @@ AB_IMPORT("ab_host", "command_translate") extern void ab_translate(double, doubl
 AB_IMPORT("ab_host", "command_scale") extern void ab_scale(double, double);
 AB_IMPORT("ab_host", "command_rotate") extern void ab_rotate(double);
 
+/* Shear, as tangents: ab_skew(M_PI/6, 0) leans 30 degrees to the right.
+ * A sheared rect is not a rect, so it becomes real geometry like a rotated
+ * one does. */
+AB_IMPORT("ab_host", "command_skew") extern void ab_skew(double x, double y);
+
+/* Concatenate an arbitrary 2x3 affine: (x,y) -> (a*x + c*y + e, b*x + d*y + f).
+ * Every other transform verb is a named case of this. */
+AB_IMPORT("ab_host", "command_transform2d")
+extern void ab_transform2d(double a, double b, double c, double d, double e, double f);
+
+/* A textured quad with PERSPECTIVE-CORRECT sampling: four corners in any
+ * convex arrangement, the texture mapped as if the quad were a plane in 3D.
+ * This is the difference between a tilt that reads as a receding surface and
+ * one that warps like a PS1 polygon. Corners are [tl, tr, br, bl]; UVs are
+ * the unit square. Pass handle 0 for an untextured gradient. */
+typedef struct { double x, y; } ab_point;
+AB_IMPORT("ab_host", "command_quad")
+extern int32_t ab_quad_raw(const ab_point *corners, int32_t handle, uint32_t rgba);
+static inline int32_t ab_quad(const ab_point *corners, int32_t handle, uint32_t rgba) {
+  return ab_quad_raw(corners, handle, rgba);
+}
+
 /* --- Geometry batches ----------------------------------------------------
  * Triangles with per-vertex colour and optional UVs, submitted as ONE command
  * instead of N. That matters: the host caps a frame at 16384 commands, and a

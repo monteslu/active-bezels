@@ -580,6 +580,117 @@ test('a host may transfer the composed frame away between frames', (t) => {
   gpu.destroy();
 });
 
+test('skew and perspective quads agree between CPU and GPU', (t) => {
+  // Two things a bezel needs for a surface that is not axis-aligned:
+  //   skew()  -- a shear in the transform stack, so a rect leans
+  //   quad()  -- four arbitrary corners with PERSPECTIVE-CORRECT texturing,
+  //              which is the difference between a tilt that reads as a
+  //              receding plane and one that warps like a PS1 polygon
+  const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 320, outputHeight: 180 });
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  const cpu = new ActiveBezelCompositor({ outputWidth: 320, outputHeight: 180 });
+
+  const N = 16;
+  const tex = new Uint8Array(N * N * 4);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const o = (y * N + x) * 4;
+      const on = ((x ^ y) & 1) === 1;
+      tex[o] = on ? 255 : 20; tex[o + 1] = on ? 180 : 20;
+      tex[o + 2] = on ? 60 : 20; tex[o + 3] = 255;
+    }
+  }
+  // a trapezoid: narrow far edge on top, wide near edge at the bottom
+  const corners = [{ x: 760, y: 200 }, { x: 1160, y: 200 },
+    { x: 1720, y: 900 }, { x: 200, y: 900 }];
+
+  const scene = (c) => {
+    c.reset(); c.clear(0x000000ff);
+    const handle = c.createTexture(tex, N, N);
+    c.quad(corners, handle);
+    c.pushTransform(); c.translate(300, 950); c.skew(Math.PI / 6, 0);
+    c.fillRect(0, 0, 400, 100, 0x40a0ffff);
+    c.popTransform();
+    return c.compose(new Uint8Array(4), 1, 1).rgba;
+  };
+  const a = scene(cpu);
+  const b = scene(gpu);
+
+  let lit = 0;
+  for (let i = 0; i < a.length; i += 4) if (a[i] + a[i + 1] + a[i + 2] > 90) lit++;
+  assert.ok(lit > 5000, `control: the shapes must actually draw (lit ${lit})`);
+
+  let big = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const d = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]),
+      Math.abs(a[i + 2] - b[i + 2]));
+    if (d > 40) big++;
+  }
+  // only edge-coverage pixels may disagree; a wrong divisor would repaint
+  // the whole quad and blow past this by orders of magnitude
+  assert.ok(big < 60, `CPU/GPU differ materially on ${big} px`);
+  gpu.destroy();
+});
+
+test('quad() foreshortens the texture, mesh() does not', (t) => {
+  // The proof that the perspective divisor is real: with the SAME four
+  // corners, quad() must compress the texture toward the far edge while a
+  // hand-built affine mesh spaces it evenly.
+  const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 320, outputHeight: 180 });
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  const N = 16;
+  const tex = new Uint8Array(N * N * 4);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const o = (y * N + x) * 4;
+      const on = (y % 2) === 0;
+      tex[o] = on ? 255 : 20; tex[o + 1] = on ? 255 : 20;
+      tex[o + 2] = on ? 255 : 20; tex[o + 3] = 255;
+    }
+  }
+  const TL = { x: 760, y: 200 }, TR = { x: 1160, y: 200 };
+  const BR = { x: 1720, y: 900 }, BL = { x: 200, y: 900 };
+
+  // measure stripe band heights down the centre column, far -> near
+  const bands = (rgba) => {
+    const cx = Math.round(960 / 1920 * 320);
+    const out = [];
+    let prev = null, start = 0;
+    for (let y = Math.round(200 / 1080 * 180); y < Math.round(900 / 1080 * 180); y++) {
+      const on = rgba[(y * 320 + cx) * 4] > 128;
+      if (prev === null) { prev = on; start = y; continue; }
+      if (on !== prev) { out.push(y - start); start = y; prev = on; }
+    }
+    return out;
+  };
+  const split = (b) => {
+    const half = Math.floor(b.length / 2);
+    const far = b.slice(0, half).reduce((x, y) => x + y, 0);
+    const near = b.slice(half).reduce((x, y) => x + y, 0);
+    return near > 0 ? far / near : 0;
+  };
+
+  gpu.reset(); gpu.clear(0x000000ff);
+  const h1 = gpu.createTexture(tex, N, N);
+  gpu.quad([TL, TR, BR, BL], h1);
+  const perspective = split(bands(gpu.compose(new Uint8Array(4), 1, 1).rgba));
+
+  gpu.reset(); gpu.clear(0x000000ff);
+  const h2 = gpu.createTexture(tex, N, N);
+  const w = 0xffffffff;
+  gpu.mesh([
+    { ...TL, u: 0, v: 0, rgba: w }, { ...TR, u: 1, v: 0, rgba: w }, { ...BL, u: 0, v: 1, rgba: w },
+    { ...BL, u: 0, v: 1, rgba: w }, { ...TR, u: 1, v: 0, rgba: w }, { ...BR, u: 1, v: 1, rgba: w },
+  ], h2);
+  const affine = split(bands(gpu.compose(new Uint8Array(4), 1, 1).rgba));
+
+  assert.ok(perspective > 1.8,
+    `quad() must foreshorten (far/near band ratio ${perspective.toFixed(2)})`);
+  assert.ok(affine < 1.4,
+    `mesh() must stay affine (far/near band ratio ${affine.toFixed(2)})`);
+  gpu.destroy();
+});
+
 test('a picture effect filters the scene without flipping it', (t) => {
   const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 192, outputHeight: 108 });
   if (!gpu) return t.skip('OpenGL ES context unavailable');
