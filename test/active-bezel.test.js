@@ -559,6 +559,27 @@ test('checked-in C and Lua reference packages validate and compile', async () =>
   }
 });
 
+test('a host may transfer the composed frame away between frames', (t) => {
+  // retroemu ships the composite to its video worker with a transfer list,
+  // which DETACHES the backing ArrayBuffer. The next compose must reallocate
+  // rather than trap with "set on a detached ArrayBuffer".
+  const check = (c) => {
+    c.reset(); c.clear(0x336699ff);
+    const first = c.compose(new Uint8Array(4), 1, 1);
+    assert.ok(first.rgba.length > 0);
+    structuredClone(first.rgba.buffer, { transfer: [first.rgba.buffer] }); // detach
+    assert.equal(first.rgba.buffer.byteLength, 0, 'control: buffer must be detached');
+    c.reset(); c.clear(0x996633ff);
+    const second = c.compose(new Uint8Array(4), 1, 1);
+    assert.deepEqual([...second.rgba.subarray(0, 3)], [0x99, 0x66, 0x33]);
+  };
+  check(new ActiveBezelCompositor({ outputWidth: 32, outputHeight: 18 }));
+  const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 32, outputHeight: 18 });
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  check(gpu);
+  gpu.destroy();
+});
+
 test('a picture effect filters the scene without flipping it', (t) => {
   const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 192, outputHeight: 108 });
   if (!gpu) return t.skip('OpenGL ES context unavailable');

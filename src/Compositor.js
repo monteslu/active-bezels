@@ -545,6 +545,13 @@ export class ActiveBezelCompositor {
   }
 
   compose(gamePixels, gameWidth, gameHeight) {
+    /* A host may TRANSFER the returned frame (retroemu ships it to its video
+     * worker, which detaches the backing ArrayBuffer). That is a legitimate
+     * zero-copy pattern, so the compositor reallocates instead of trapping:
+     * a detached buffer has byteLength 0. */
+    if (this.output.buffer.byteLength === 0) {
+      this.output = new Uint8ClampedArray(this.outputWidth * this.outputHeight * 4);
+    }
     fill(this.output, this.clearColor);
     if (this.commands.length === 0) {
       const gameAspect = gameWidth / gameHeight;

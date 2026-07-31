@@ -431,6 +431,11 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   }
 
   compose(gamePixels, gameWidth, gameHeight) {
+    /* Same transferred-frame contract as the CPU compositor: reallocate if
+     * the host detached last frame's buffer. */
+    if (this.output.buffer.byteLength === 0) {
+      this.output = new Uint8ClampedArray(this.outputWidth * this.outputHeight * 4);
+    }
     if (!this.commands.length) {
       const aspect = gameWidth / gameHeight;
       const w = LOGICAL_HEIGHT * aspect;
