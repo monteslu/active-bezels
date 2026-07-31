@@ -1,7 +1,7 @@
 {
   "name": "active-bezel",
   "version": "0.3.0",
-  "description": "Active Bezels: executable companions to a specific ROM. A .ab package runs once per emulated frame, reads the emulator's live memory regions, and renders the complete final scene — maps, HUDs, reconstructed world graphics, artwork — around or over the original game picture. This is the format spec, the reference runtime, and the packaging tool.",
+  "description": "Active Bezels: executable companions to a specific ROM. A .ab package runs once per emulated frame, reads the emulator's live memory regions, and renders the complete final scene \u2014 maps, HUDs, reconstructed world graphics, artwork \u2014 around or over the original game picture. This is the format spec, the reference runtime, and the packaging tool.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -15,7 +15,9 @@
     "./gpu-compositor": "./src/GpuCompositor.js",
     "./host": "./src/Host.js",
     "./sdk/abi.json": "./sdk/abi.json",
-    "./sdk/active_bezel.h": "./sdk/active_bezel.h"
+    "./sdk/active_bezel.h": "./sdk/active_bezel.h",
+    "./package.json": "./package.json",
+    "./runtimes/*": "./runtimes/*"
   },
   "bin": {
     "abtool": "bin/abtool.js"
