@@ -59,24 +59,30 @@ jobs:
       - name: Install
         run: npm ci || npm install
 
-      # Runs check-runtimes via the pretest hook, then the suite. Both must
-      # pass. `--test-reporter spec` keeps the skip count visible in the log.
+      # Runs check-runtimes via the pretest hook, then the suite.
+      #
+      # ONE invocation, captured. A skipped test means a runtime failed to
+      # LOAD despite its wasm being present -- a real regression that a plain
+      # "tests passed" would hide, because node:test exits 0 with skips. So
+      # the exit code and the skip count are two separate questions and both
+      # are asked here, of the same run: running the suite twice would double
+      # the job for no extra signal.
+      #
+      # PIPESTATUS, not `|| exit 1`: the pipe into tee means $? is tee's
+      # status, which is 0 even when the suite failed.
       - name: Verify runtimes and test
-        run: npm test
-
-      # A skipped test here means a runtime failed to LOAD despite its wasm
-      # being present -- a real regression that a plain "tests passed" would
-      # hide, because node:test exits 0 with skips.
-      - name: No unexpected skips
         run: |
-          npm test 2>&1 | tee /tmp/test.log || exit 1
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/test.log
+          status=$?
           skipped=$(grep -E '^. skipped ' /tmp/test.log | tail -1 | grep -oE '[0-9]+$')
-          echo "skipped: ${skipped:-0}"
+          echo "exit=${status} skipped=${skipped:-0}"
           if [ "${skipped:-0}" -ne 0 ]; then
             echo "::error::${skipped} test(s) skipped; every runtime wasm is committed so nothing should skip"
             grep -E 'skip' /tmp/test.log | head -20
             exit 1
           fi
+          exit "$status"
 
   build-runtimes:
     name: rebuild from source
@@ -170,9 +176,15 @@ jobs:
         run: npm test
 
       # Drift is a WARNING, not a failure, on purpose. Emscripten output is
-      # not bit-reproducible across versions or even always within one (build
-      # paths, temp filenames and LLVM ordering all leak in), so a byte
-      # comparison would fail constantly for reasons unrelated to the source.
+      # not bit-reproducible ACROSS versions (build paths, temp filenames and
+      # LLVM ordering all leak in), so gating on bytes would fail for reasons
+      # unrelated to the source.
+      #
+      # Within a pinned emsdk it does hold: on 4.0.18 all four engines rebuild
+      # byte-identical to the committed artifacts (verified locally
+      # 2026-07-31, deltas +0 across lua/js/python/ruby). So an "identical: no"
+      # on an unchanged EMSDK_VERSION is a real signal worth reading, not
+      # expected noise.
       # A SIZE delta, though, is a genuine signal: same emsdk in, materially
       # different size out, means runtime.c or an engine pin moved without
       # the committed wasm being regenerated. Surface it, do not gate on it.
