@@ -1,0 +1,7 @@
+# QuickJS is SEEDED by build.sh (copied from a known-good checkout, or cloned
+# as a fallback), not authored here -- and it is far larger than the runtime
+# itself. Keep the engine source and its objects out of the repo; build.sh
+# reproduces both from scratch. main.wasm IS committed: it is the shipped
+# artifact a bezel package uses as its entry, same as the Lua runtime's.
+vendor/
+obj/

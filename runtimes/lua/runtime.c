@@ -24,22 +24,7 @@
 
 #include "../../sdk/active_bezel.h"
 
-/* Batteries: PNG/JPG/GIF/BMP decoding and real TrueType text. Both are
- * public-domain stb single-headers; emscripten's libc supplies everything
- * they need. Interesting bezels want images and readable type, and "ship a
- * C toolchain" must never be the price of either. */
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_NO_STDIO
-#define STBI_NO_HDR
-#define STBI_NO_LINEAR
-/* assert() in emscripten writes to stderr, which drags fd_write/fd_seek/
- * fd_close WASI imports into the wasm. These are release builds of
- * public-domain decoders; a failed internal assert may as well trap. */
-#define STBI_ASSERT(x) ((void)0)
-#include "stb_image.h"
-#define STB_TRUETYPE_IMPLEMENTATION
-#define STBTT_assert(x) ((void)0)
-#include "stb_truetype.h"
+#include "../common/ab_batteries.h"
 
 /* --- link stubs ----------------------------------------------------------
  * lbaselib's dofile/loadfile still reference luaL_loadfilex even though the
@@ -52,21 +37,6 @@ int luaL_loadfilex(lua_State *S, const char *filename, const char *mode) {
   (void)filename; (void)mode;
   lua_pushliteral(S, "no filesystem in an active bezel");
   return LUA_ERRFILE;
-}
-void emscripten_notify_memory_growth(int idx) { (void)idx; }
-
-/* libc's __wasi_clock_time_get is a forwarding stub around the actual WASI
- * import; defining it here strongly removes the import. A bezel has no wall
- * clock -- time comes from the host via time_elapsed_ms -- so this returns a
- * counter that advances a millisecond per call: monotonic, deterministic,
- * and honest about not being real time. */
-unsigned short __wasi_clock_time_get(unsigned int id, unsigned long long precision,
-                                     unsigned long long *out) {
-  static unsigned long long fake_ns = 0;
-  (void)id; (void)precision;
-  fake_ns += 1000000ull;
-  if (out) *out = fake_ns;
-  return 0;
 }
 
 /* ------------------------------------------------------------------ log -- */
@@ -338,18 +308,13 @@ static int l_config_string(lua_State *S) {
 
 /* --- images --------------------------------------------------------------
  * ab.image('assets/logo.png') -> { texture=, width=, height= }
- * Decodes from the package's asset bundle, uploads once, returns the handle
- * plus dimensions. ab.image_data(bytes) does the same for a raw string.
+ * ab.image_data(bytes) does the same for a raw string. Both go through the
+ * shared batteries so every runtime decodes identically.
  */
-static int push_image_from_memory(lua_State *S, const unsigned char *bytes, int len) {
-  int w = 0, h = 0, comp = 0;
-  unsigned char *pixels = stbi_load_from_memory(bytes, len, &w, &h, &comp, 4);
-  if (!pixels) return luaL_error(S, "image: decode failed: %s", stbi_failure_reason());
-  int32_t texture = ab_texture_create_rgba(pixels, w, h);
-  stbi_image_free(pixels);
-  if (texture <= 0) return luaL_error(S, "image: texture_create failed");
+static int push_image(lua_State *S, int ok, int32_t tex, int w, int h, const char *err) {
+  if (!ok) return luaL_error(S, "image: %s", err ? err : "decode failed");
   lua_createtable(S, 0, 3);
-  lua_pushinteger(S, texture); lua_setfield(S, -2, "texture");
+  lua_pushinteger(S, tex); lua_setfield(S, -2, "texture");
   lua_pushinteger(S, w); lua_setfield(S, -2, "width");
   lua_pushinteger(S, h); lua_setfield(S, -2, "height");
   return 1;
@@ -358,175 +323,75 @@ static int push_image_from_memory(lua_State *S, const unsigned char *bytes, int 
 static int l_image_data(lua_State *S) {
   size_t n = 0;
   const char *bytes = luaL_checklstring(S, 1, &n);
-  return push_image_from_memory(S, (const unsigned char *)bytes, (int)n);
+  int32_t tex = 0; int w = 0, h = 0; const char *err = NULL;
+  int ok = ab_bat_image_from_memory((const unsigned char *)bytes, (int)n, &tex, &w, &h, &err);
+  return push_image(S, ok, tex, w, h, err);
 }
 
 static int l_image(lua_State *S) {
   size_t n = 0;
   const char *name = luaL_checklstring(S, 1, &n);
-  int32_t size = ab_asset_size_raw(name, (int32_t)n);
-  if (size <= 0) return luaL_error(S, "image: no such asset '%s'", name);
-  unsigned char *bytes = (unsigned char *)malloc((size_t)size);
-  if (!bytes) return luaL_error(S, "image: out of memory");
-  int32_t got = ab_asset_read_raw(name, (int32_t)n, bytes, size);
-  if (got <= 0) { free(bytes); return luaL_error(S, "image: asset_read failed"); }
-  int result = push_image_from_memory(S, bytes, (int)got);
-  free(bytes);
-  return result;
+  int32_t tex = 0; int w = 0, h = 0; const char *err = NULL;
+  int ok = ab_bat_image_from_asset(name, (int)n, &tex, &w, &h, &err);
+  return push_image(S, ok, tex, w, h, err);
 }
 
 /* --- TrueType text -------------------------------------------------------
- * ab.font('assets/font.ttf') -> font handle
- * ab.print(font, text, x, y, px, rgba) -> x advance (draws)
- * ab.measure(font, text, px) -> width in logical pixels
- *
- * Each (font, integer px) gets an ASCII 32..126 atlas baked once into a
- * single WHITE texture; print emits one textured mesh whose vertex colour
- * carries the tint, so any colour costs nothing and a frame of text is a
- * couple of draw calls, not hundreds.
+ * ab.font('assets/font.ttf') -> handle
+ * ab.print(font, text, x, y, px, rgba) -> pen X after the last glyph
+ * ab.measure(font, text, px) -> width
+ * ab.font_metrics(font, px) -> ascent, descent, line_height
+ * All shared with the other runtimes (see runtimes/common/ab_batteries.c).
  */
-#define FONT_MAX 8
-#define FONT_SIZE_CACHE 16
-#define ATLAS_PX 1024
-typedef struct {
-  int32_t px;
-  int32_t texture;
-  stbtt_bakedchar baked[96];
-} FontAtlas;
-typedef struct {
-  unsigned char *bytes;
-  stbtt_fontinfo info;
-  FontAtlas sizes[FONT_SIZE_CACHE];
-  int32_t used;
-} Font;
-static Font g_fonts[FONT_MAX];
-static int32_t g_font_count = 0;
-
-static FontAtlas *font_atlas(Font *font, int32_t px) {
-  if (px < 6) px = 6;
-  if (px > 256) px = 256;
-  for (int32_t i = 0; i < font->used; i++)
-    if (font->sizes[i].px == px) return &font->sizes[i];
-  FontAtlas *slot;
-  if (font->used < FONT_SIZE_CACHE) {
-    slot = &font->sizes[font->used++];
-  } else {
-    /* Recycle the oldest slot -- but do NOT destroy its texture here: glyph
-     * meshes emitted EARLIER THIS FRAME may still reference it, and the
-     * compositor resolves handles at compose time. Destroying mid-frame
-     * turned every already-drawn string into solid boxes (dead handle ==
-     * color-only quads). The stale texture leaks until shutdown; a bezel
-     * cycling >16 live sizes per font is the pathological case and pays
-     * with memory, not with corrupted text. */
-    slot = &font->sizes[0];
-  }
-  unsigned char *alpha = (unsigned char *)malloc(ATLAS_PX * ATLAS_PX);
-  unsigned char *rgba = (unsigned char *)malloc(ATLAS_PX * ATLAS_PX * 4);
-  if (!alpha || !rgba) { free(alpha); free(rgba); return NULL; }
-  stbtt_BakeFontBitmap(font->bytes, 0, (float)px, alpha, ATLAS_PX, ATLAS_PX, 32, 96, slot->baked);
-  for (int32_t i = 0; i < ATLAS_PX * ATLAS_PX; i++) {
-    rgba[i * 4 + 0] = 255; rgba[i * 4 + 1] = 255;
-    rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = alpha[i];
-  }
-  slot->px = px;
-  slot->texture = ab_texture_create_rgba(rgba, ATLAS_PX, ATLAS_PX);
-  free(alpha); free(rgba);
-  return slot->texture > 0 ? slot : NULL;
-}
-
 static int l_font(lua_State *S) {
   size_t n = 0;
   const char *name = luaL_checklstring(S, 1, &n);
-  if (g_font_count >= FONT_MAX) return luaL_error(S, "font: too many fonts (max %d)", FONT_MAX);
-  int32_t size = ab_asset_size_raw(name, (int32_t)n);
-  if (size <= 0) return luaL_error(S, "font: no such asset '%s'", name);
-  Font *font = &g_fonts[g_font_count];
-  font->bytes = (unsigned char *)malloc((size_t)size);
-  if (!font->bytes) return luaL_error(S, "font: out of memory");
-  if (ab_asset_read_raw(name, (int32_t)n, font->bytes, size) <= 0) {
-    free(font->bytes); font->bytes = NULL;
-    return luaL_error(S, "font: asset_read failed");
-  }
-  if (!stbtt_InitFont(&font->info, font->bytes, 0)) {
-    free(font->bytes); font->bytes = NULL;
-    return luaL_error(S, "font: '%s' is not a TrueType font", name);
-  }
-  font->used = 0;
-  lua_pushinteger(S, ++g_font_count);   /* handles are 1-based */
+  const char *err = NULL;
+  int32_t handle = ab_bat_font_load(name, (int)n, &err);
+  if (handle <= 0) return luaL_error(S, "font: %s", err ? err : "load failed");
+  lua_pushinteger(S, handle);
   return 1;
 }
 
-static Font *arg_font(lua_State *S, int idx) {
-  lua_Integer handle = luaL_checkinteger(S, idx);
-  if (handle < 1 || handle > g_font_count || !g_fonts[handle - 1].bytes)
-    luaL_error(S, "bad font handle %d", (int)handle);
-  return &g_fonts[handle - 1];
-}
-
 static int l_print(lua_State *S) {
-  Font *font = arg_font(S, 1);
   size_t n = 0;
+  int32_t font = (int32_t)luaL_checkinteger(S, 1);
   const char *text = luaL_checklstring(S, 2, &n);
-  double x = luaL_checknumber(S, 3), y = luaL_checknumber(S, 4);
-  int32_t px = (int32_t)luaL_checkinteger(S, 5);
-  uint32_t color = (uint32_t)(lua_Unsigned)luaL_checknumber(S, 6);
-  FontAtlas *atlas = font_atlas(font, px);
-  if (!atlas) return luaL_error(S, "print: atlas bake failed");
-  if (n == 0) { lua_pushnumber(S, x); return 1; }
-  ab_vertex *verts = (ab_vertex *)malloc(sizeof(ab_vertex) * 6 * n);
-  if (!verts) return luaL_error(S, "print: out of memory");
-  float fx = (float)x, fy = (float)y;
-  int32_t count = 0;
-  for (size_t i = 0; i < n; i++) {
-    unsigned char c = (unsigned char)text[i];
-    if (c < 32 || c > 126) c = '?';
-    stbtt_aligned_quad q;
-    stbtt_GetBakedQuad(atlas->baked, ATLAS_PX, ATLAS_PX, c - 32, &fx, &fy, &q, 1);
-    /* ab_vertex is {x, y, u, v, rgba} -- positions, then UVs, then colour. */
-    ab_vertex tl = { q.x0, q.y0, q.s0, q.t0, color };
-    ab_vertex tr = { q.x1, q.y0, q.s1, q.t0, color };
-    ab_vertex bl = { q.x0, q.y1, q.s0, q.t1, color };
-    ab_vertex br = { q.x1, q.y1, q.s1, q.t1, color };
-    verts[count * 6 + 0] = tl; verts[count * 6 + 1] = tr; verts[count * 6 + 2] = bl;
-    verts[count * 6 + 3] = bl; verts[count * 6 + 4] = tr; verts[count * 6 + 5] = br;
-    count++;
-  }
-  ab_mesh(verts, count * 6, atlas->texture);
-  free(verts);
-  lua_pushnumber(S, fx);
+  const char *err = NULL;
+  double advance = ab_bat_font_print(font, text, (int)n,
+    luaL_checknumber(S, 3), luaL_checknumber(S, 4),
+    (int32_t)luaL_checkinteger(S, 5),
+    (uint32_t)(lua_Unsigned)luaL_checknumber(S, 6), &err);
+  if (err) return luaL_error(S, "print: %s", err);
+  lua_pushnumber(S, advance);
   return 1;
 }
 
 static int l_measure(lua_State *S) {
-  Font *font = arg_font(S, 1);
   size_t n = 0;
+  int32_t font = (int32_t)luaL_checkinteger(S, 1);
   const char *text = luaL_checklstring(S, 2, &n);
-  int32_t px = (int32_t)luaL_checkinteger(S, 3);
-  FontAtlas *atlas = font_atlas(font, px);
-  if (!atlas) return luaL_error(S, "measure: atlas bake failed");
-  float fx = 0, fy = 0;
-  for (size_t i = 0; i < n; i++) {
-    unsigned char c = (unsigned char)text[i];
-    if (c < 32 || c > 126) c = '?';
-    stbtt_aligned_quad q;
-    stbtt_GetBakedQuad(atlas->baked, ATLAS_PX, ATLAS_PX, c - 32, &fx, &fy, &q, 1);
-  }
-  lua_pushnumber(S, fx);
+  const char *err = NULL;
+  double w = ab_bat_font_measure(font, text, (int)n, (int32_t)luaL_checkinteger(S, 3), &err);
+  if (err) return luaL_error(S, "measure: %s", err);
+  lua_pushnumber(S, w);
   return 1;
 }
 
-/* --- little-endian / big-endian integer reads over a region ------------- */
+static int l_font_metrics(lua_State *S) {
+  int32_t font = (int32_t)luaL_checkinteger(S, 1);
+  double a = 0, d = 0, lh = 0; const char *err = NULL;
+  if (!ab_bat_font_metrics(font, (int32_t)luaL_checkinteger(S, 2), &a, &d, &lh, &err))
+    return luaL_error(S, "font_metrics: %s", err ? err : "failed");
+  lua_pushnumber(S, a); lua_pushnumber(S, d); lua_pushnumber(S, lh);
+  return 3;
+}
+
+/* --- multi-byte region reads (shared) ------------------------------------ */
 static int read_uint(lua_State *S, int bytes) {
-  int32_t id = (int32_t)luaL_checkinteger(S, 1);
-  int32_t off = (int32_t)luaL_checkinteger(S, 2);
-  int big = lua_toboolean(S, 3);
-  lua_Unsigned value = 0;
-  for (int i = 0; i < bytes; i++) {
-    int32_t v = ab_region_read_u8(id, off + i);
-    if (v < 0) v = 0;
-    value |= (lua_Unsigned)(v & 0xff) << (8 * (big ? bytes - 1 - i : i));
-  }
-  lua_pushinteger(S, (lua_Integer)value);
+  lua_pushinteger(S, (lua_Integer)ab_bat_read_uint(
+    (int32_t)luaL_checkinteger(S, 1), (int32_t)luaL_checkinteger(S, 2),
+    bytes, lua_toboolean(S, 3)));
   return 1;
 }
 static int l_read_u16(lua_State *S) { return read_uint(S, 2); }
@@ -551,11 +416,9 @@ static int l_loadasset(lua_State *S) {
 
 /* rgb(r, g, b[, a]) -> packed 0xRRGGBBAA, the format every command takes */
 static int l_rgb(lua_State *S) {
-  uint32_t r = (uint32_t)luaL_checkinteger(S, 1) & 0xff;
-  uint32_t g = (uint32_t)luaL_checkinteger(S, 2) & 0xff;
-  uint32_t b = (uint32_t)luaL_checkinteger(S, 3) & 0xff;
-  uint32_t a = (uint32_t)luaL_optinteger(S, 4, 255) & 0xff;
-  lua_pushinteger(S, (lua_Integer)((r << 24) | (g << 16) | (b << 8) | a));
+  lua_pushinteger(S, (lua_Integer)ab_bat_rgba(
+    (int)luaL_checkinteger(S, 1), (int)luaL_checkinteger(S, 2),
+    (int)luaL_checkinteger(S, 3), (int)luaL_optinteger(S, 4, 255)));
   return 1;
 }
 
@@ -608,6 +471,7 @@ static const luaL_Reg AB_FUNCS[] = {
   { "font", l_font },
   { "print", l_print },
   { "measure", l_measure },
+  { "font_metrics", l_font_metrics },
   { "read_u16", l_read_u16 },
   { "read_u24", l_read_u24 },
   { "read_u32", l_read_u32 },
@@ -771,12 +635,5 @@ void ab_event(int32_t kind) {
 AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {
   if (L) { lua_close(L); L = NULL; }
-  for (int32_t i = 0; i < g_font_count; i++) {
-    for (int32_t s = 0; s < g_fonts[i].used; s++)
-      if (g_fonts[i].sizes[s].texture > 0) ab_texture_destroy(g_fonts[i].sizes[s].texture);
-    free(g_fonts[i].bytes);
-    g_fonts[i].bytes = NULL;
-    g_fonts[i].used = 0;
-  }
-  g_font_count = 0;
+  ab_bat_shutdown();
 }

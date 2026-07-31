@@ -1,0 +1,7 @@
+# MicroPython is FETCHED by build.sh at a pinned tag, and the embed port's
+# generated .c files are a build product of it plus our mpconfigport.h.
+# Both are reproducible; neither belongs in the repo. main.wasm IS committed:
+# it is the shipped artifact a bezel package uses as its entry.
+vendor/
+micropython_embed/
+build-embed/

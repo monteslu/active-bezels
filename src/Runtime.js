@@ -37,6 +37,7 @@ export class ActiveBezelRuntime {
   static async create(options) {
     const pkg = await ActiveBezelPackage.open(options.packagePath);
     const runtime = new ActiveBezelRuntime({ ...options, pkg });
+    runtime.packagePath = options.packagePath;
     await runtime.init();
     return runtime;
   }
@@ -360,6 +361,34 @@ export class ActiveBezelRuntime {
     }
     if (!this.enabled || typeof this.instance?.exports?.ab_event !== 'function') return;
     this.instance.exports.ab_event(type, 0);
+  }
+
+  /*
+   * Re-read the package from disk, then tell the guest its assets changed.
+   *
+   * ActiveBezelPackage caches every entry at open time, which is what makes
+   * asset_read cheap -- but it also means firing ASSETS_RELOADED alone made
+   * a guest re-read the SAME bytes it already had. Every runtime implements
+   * that event by rebooting its interpreter and reloading main.<lang>, so
+   * without this the whole edit-and-reload story quietly did nothing.
+   *
+   * Returns false when there is no path to re-open (a package handed in
+   * directly rather than by path) or the new package fails to load -- in
+   * which case the OLD package stays live, because a broken repack should
+   * not take a working bezel down with it.
+   */
+  async reloadAssets() {
+    if (!this.packagePath) return false;
+    let next;
+    try {
+      next = await ActiveBezelPackage.open(this.packagePath);
+    } catch (err) {
+      this.error = `asset reload rejected: ${err.message}`;
+      return false;
+    }
+    this.package = next;
+    this.event(AB_EVENT.ASSETS_RELOADED);
+    return true;
   }
 
   setConfig(key, value) {

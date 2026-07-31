@@ -37,8 +37,8 @@ fi
 # and the JS-trampoline default cannot work under a host that provides only
 # the ab_host module. (Same lesson as wasmcart interpreters.) No LTO: it
 # breaks the wasm-sjlj path.
-"$EMCC" runtime.c vendor/liblua54.a \
-  -O2 -I vendor/lua/src -I . \
+"$EMCC" runtime.c ../common/ab_batteries.c ../common/ab_wasi_stubs.c vendor/liblua54.a \
+  -O2 -I vendor/lua/src -I . -I ../common \
   -s STANDALONE_WASM=1 --no-entry -sSUPPORT_LONGJMP=wasm \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=16777216 -s STACK_SIZE=1048576 \
