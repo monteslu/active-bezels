@@ -221,6 +221,22 @@ export function toGlesShader(source, stage) {
     'precision highp float;',
     'precision highp int;',
     'precision highp sampler2D;',
+    /*
+     * Declare what this context can do, rather than editing shaders that ask.
+     *
+     * Shaders written for the Cg era gate features behind DRIVERS_ALLOW_*
+     * switches, shipped commented out because fp30/fp40 profiles could not be
+     * assumed. GLES 3 has all of them in core: textureLod, texture() with a
+     * bias, and dFdx/dFdy. Leaving them undefined makes a shader #undef its
+     * own fast paths and fall back to code paths that were never the intent.
+     *
+     * This is the loader's job -- the same job RetroArch's own GLES path does.
+     * It sets a preprocessor switch the shader author provided for exactly
+     * this purpose; it does not touch the shader's code.
+     */
+    '#define DRIVERS_ALLOW_TEX2DLOD',
+    '#define DRIVERS_ALLOW_TEX2DBIAS',
+    '#define DRIVERS_ALLOW_DERIVATIVES',
   ];
   if (stage === 'FRAGMENT' && !declaresOut) {
     prelude.push('out vec4 _ab_FragColor;', '#define gl_FragColor _ab_FragColor');
