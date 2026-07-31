@@ -144,6 +144,30 @@ static inline int32_t ab_surface_filter(int32_t source, int32_t destination, con
   return ab_surface_filter_raw(source, destination, shader, ab_strlen(shader));
 }
 
+/* Run a multi-pass RetroArch `.glslp` preset from the package into a surface.
+ *
+ * surface_filter above takes ONE fragment shader, which covers most effects.
+ * The serious CRT presets are not one shader: crt-royale is twelve passes with
+ * six lookup textures, each pass rendering into its own buffer at its own
+ * resolution and later passes sampling several earlier ones. That cannot be
+ * flattened into a single shader at any size.
+ *
+ * `preset` names a `.glslp` inside the package; its relative `shaderN` paths
+ * resolve against the preset's own directory, so a preset tree can be dropped
+ * into the package as-is. The destination surface acts as the preset's
+ * viewport, which is what lets the same preset serve a full-screen picture or
+ * a small on-screen tube.
+ *
+ * Returns 0 if the preset cannot be run -- CPU compositor, a pass that fails
+ * to compile, or lookup textures with no decoder wired up. It never renders a
+ * partial chain: a preset either runs as written or does not run. */
+AB_IMPORT("ab_host", "surface_preset")
+extern int32_t ab_surface_preset_raw(int32_t source, int32_t destination,
+                                     const char *preset, int32_t length);
+static inline int32_t ab_surface_preset(int32_t source, int32_t destination, const char *preset) {
+  return ab_surface_preset_raw(source, destination, preset, ab_strlen(preset));
+}
+
 /* Pass as a source/texture handle to mean THE LIVE GAME FRAME. */
 #define AB_GAME_TEXTURE (-1)
 

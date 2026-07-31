@@ -2,6 +2,8 @@ import { createRequire } from 'node:module';
 import {
   ActiveBezelCompositor, LOGICAL_WIDTH, LOGICAL_HEIGHT, forEachGlyphRect,
 } from './Compositor.js';
+import { loadPreset, resolveSizes } from './GlslPreset.js';
+import { GlslChain } from './GlslChain.js';
 
 /*
  * `native-gles` is a REQUIRED dependency -- every consumer of this package
@@ -46,6 +48,11 @@ const C = {
   SCISSOR_TEST: 0x0c11,
   FRAMEBUFFER: 0x8d40, COLOR_ATTACHMENT0: 0x8ce0,
   FRAMEBUFFER_COMPLETE: 0x8cd5,
+  /* Multi-pass preset support: sRGB targets, mipmapped and wrapped inputs. */
+  SRGB8_ALPHA8: 0x8c43, RGBA16F: 0x881a, HALF_FLOAT: 0x140b,
+  REPEAT: 0x2901, MIRRORED_REPEAT: 0x8370, CLAMP_TO_BORDER: 0x812d,
+  LINEAR_MIPMAP_LINEAR: 0x2703, NEAREST_MIPMAP_NEAREST: 0x2700,
+  UNSIGNED_INT: 0x1405, TEXTURE_MAX_LEVEL: 0x813d,
 };
 
 function compile(type, source) {
@@ -149,6 +156,30 @@ function snapRect(x, y, w, h, dw, dh) {
   const px0 = Math.floor(x * sx); const py0 = Math.floor(y * sy);
   const px1 = Math.ceil((x + w) * sx); const py1 = Math.ceil((y + h) * sy);
   return [px0 / sx, py0 / sy, (px1 - px0) / sx, (py1 - py0) / sy];
+}
+
+/*
+ * Link a program from BOTH stages supplied by the caller.
+ *
+ * program() above pairs an arbitrary fragment shader with its own fixed vertex
+ * shader, which is right for single-shader effects. A `.glslp` pass is
+ * different: the file carries both stages, and its vertex stage is where the
+ * libretro attribute contract (VertexCoord, TexCoord) and the per-pass
+ * coordinate maths live. Substituting our own vertex shader would drop that.
+ */
+function programFromStages(vertexSource, fragmentSource) {
+  const vertex = compile(C.VERTEX_SHADER, vertexSource);
+  const pixel = compile(C.FRAGMENT_SHADER, fragmentSource);
+  const result = gl.glCreateProgram();
+  gl.glAttachShader(result, vertex);
+  gl.glAttachShader(result, pixel);
+  gl.glLinkProgram(result);
+  gl.glDeleteShader(vertex);
+  gl.glDeleteShader(pixel);
+  if (!gl.glGetProgramiv(result, C.LINK_STATUS)) {
+    throw new Error(String(gl.glGetProgramInfoLog(result) || 'program link failed'));
+  }
+  return result;
 }
 
 function quad(x, y, w, h, uv) {
@@ -398,6 +429,199 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     gl.glEnable(C.BLEND);
     gl.glBindFramebuffer(C.FRAMEBUFFER, 0);
     return 1;
+  }
+
+  /*
+   * Run a multi-pass `.glslp` preset into a surface.
+   *
+   * The preset is parsed and its chain compiled once, then cached on the path:
+   * royale is twelve programs and six textures, which is not something to
+   * rebuild sixty times a second. A failure is cached too, as `null`, so a
+   * broken preset costs one parse rather than one per frame.
+   */
+  surfacePreset(source, destination, presetPath, gamePixels, gameWidth, gameHeight) {
+    if (!this.gpuReady) return 0;
+    const target = this.surfaces.get(destination);
+    if (!target) return 0;
+    gl.makeCurrent?.();
+
+    this.chains ??= new Map();
+    let chain = this.chains.get(presetPath);
+    if (chain === undefined) {
+      chain = null;
+      try {
+        const preset = loadPreset(presetPath);
+        const built = new GlslChain({
+          gl, C, preset, compile: programFromStages,
+        });
+        if (built.build()) {
+          this._loadPresetTextures(built, preset);
+          chain = built;
+        } else {
+          this.effectError = built.error;
+          process.env.RETROEMU_DEBUG && console.error(`[active-bezel] preset: ${built.error}`);
+        }
+      } catch (err) {
+        this.effectError = String(err.message || err);
+        process.env.RETROEMU_DEBUG && console.error(`[active-bezel] preset: ${this.effectError}`);
+      }
+      this.chains.set(presetPath, chain);
+    }
+    if (!chain) return 0;
+
+    /* Where the game frame comes from, and how big it is. */
+    let sourceTexture;
+    let sw, sh;
+    if (source === -1) {
+      sourceTexture = this.gameTexture;
+      gl.glActiveTexture(C.TEXTURE0);
+      gl.glBindTexture(C.TEXTURE_2D, sourceTexture);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.NEAREST);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.NEAREST);
+      gl.glTexImage2D(C.TEXTURE_2D, 0, C.RGBA, gameWidth, gameHeight,
+        0, C.RGBA, C.UNSIGNED_BYTE, gamePixels);
+      sw = gameWidth; sh = gameHeight;
+    } else {
+      sourceTexture = this.gpuTextures.get(source);
+      const meta = this.textures.get(source);
+      sw = meta?.width ?? target.width;
+      sh = meta?.height ?? target.height;
+    }
+    if (!sourceTexture) return 0;
+
+    /*
+     * The surface IS the viewport as far as the preset is concerned: a
+     * `viewport`-scaled pass should fill the thing being rendered into, not
+     * the display behind it. That is what makes a preset usable on a small
+     * on-screen tube as well as full-screen.
+     */
+    chain.resize(resolveSizes(chain.preset.passes, {
+      inputWidth: sw, inputHeight: sh,
+      viewportWidth: target.width, viewportHeight: target.height,
+    }));
+    if (!chain.ready) return 0;
+
+    const finalTexture = chain.render({
+      originalTexture: sourceTexture,
+      originalWidth: sw,
+      originalHeight: sh,
+      drawQuad: (prog) => this._presetGeometry(prog),
+    });
+    if (!finalTexture) return 0;
+
+    /*
+     * Copy the chain's last target into the caller's surface. A blit rather
+     * than rendering the final pass straight into it, because the chain sizes
+     * its own targets and the surface may not match -- and because the caller
+     * owns that surface's filtering and wrap state.
+     */
+    gl.glBindFramebuffer(C.FRAMEBUFFER, target.fbo);
+    gl.glViewport(0, 0, target.width, target.height);
+    gl.glDisable(C.BLEND);
+    gl.glClearColor(0, 0, 0, 1);
+    gl.glClear(C.COLOR_BUFFER_BIT);
+    const blit = this._blitProgram ??= program(`#version 300 es
+      precision mediump float;
+      in vec2 v_uv;
+      out vec4 out_color;
+      uniform sampler2D u_texture;
+      void main() { out_color = texture(u_texture, v_uv); }`);
+    gl.glActiveTexture(C.TEXTURE0);
+    gl.glBindTexture(C.TEXTURE_2D, finalTexture);
+    /* V-flip, for the same reason surfaceFilter does: FBO rows run bottom-up
+     * and every consumer of a surface samples top-down. */
+    this._geometry(blit, quad(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, { u0: 0, v0: 1, u1: 1, v1: 0 }));
+    gl.glUniform1i(gl.glGetUniformLocation(blit, 'u_texture'), 0);
+    gl.glDrawArrays(C.TRIANGLES, 0, 6);
+    gl.glEnable(C.BLEND);
+    gl.glBindFramebuffer(C.FRAMEBUFFER, 0);
+    return 1;
+  }
+
+  /*
+   * A full-target quad using the attribute names a libretro pass declares.
+   *
+   * VertexCoord is a vec4 in clip space and TexCoord is the matching uv. The
+   * MVPMatrix is set to identity: the vertex positions are already in clip
+   * space, and every pass renders a full-target quad, so there is no transform
+   * for it to carry.
+   */
+  _presetGeometry(programId) {
+    const verts = new Float32Array([
+      -1, -1, 0, 0,   1, -1, 1, 0,   1, 1, 1, 1,
+      -1, -1, 0, 0,   1,  1, 1, 1,  -1, 1, 0, 1,
+    ]);
+    gl.glBindVertexArray(this.vao);
+    gl.glBindBuffer(C.ARRAY_BUFFER, this.vbo);
+    gl.glBufferData(C.ARRAY_BUFFER, new Uint8Array(verts.buffer), C.STREAM_DRAW);
+    for (const name of ['VertexCoord', 'position', 'a_position']) {
+      const loc = gl.glGetAttribLocation(programId, name);
+      if (loc < 0) continue;
+      gl.glEnableVertexAttribArray(loc);
+      gl.glVertexAttribPointer(loc, 2, C.FLOAT, false, 16, 0);
+    }
+    for (const name of ['TexCoord', 'LUTTexCoord', 'a_uv']) {
+      const loc = gl.glGetAttribLocation(programId, name);
+      if (loc < 0) continue;
+      gl.glEnableVertexAttribArray(loc);
+      gl.glVertexAttribPointer(loc, 2, C.FLOAT, false, 16, 8);
+    }
+    const mvp = gl.glGetUniformLocation(programId, 'MVPMatrix');
+    if (mvp !== -1 && mvp !== null) {
+      /* (location, transpose, values) -- the binding derives the count from
+       * the array length, so there is no count argument. */
+      gl.glUniformMatrix4fv?.(mvp, false,
+        new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+    }
+    gl.glDrawArrays(C.TRIANGLES, 0, 6);
+  }
+
+  /*
+   * Upload a preset's lookup textures.
+   *
+   * LUTs arrive as PNG on disk, and this package has no image decoder: guests
+   * decode their own images inside the wasm (stb_image is linked into every
+   * runtime) and hand the host raw RGBA. Rather than pull a decoder into the
+   * host for this one path, the guest supplies them -- `decodeImageFile` is
+   * injected by whoever owns a decoder.
+   *
+   * Presets that need LUTs and have no decoder available REFUSE rather than
+   * render: crt-royale's mask is one of its lookup textures, and running it
+   * without one produces a picture that looks like the preset works and is
+   * quietly missing its defining feature.
+   */
+  _loadPresetTextures(chain, preset) {
+    if (preset.textures.length && typeof this.decodeImageFile !== 'function') {
+      throw new Error(
+        `preset needs ${preset.textures.length} lookup texture(s) ` +
+        `(${preset.textures.map((t) => t.name).join(', ')}) but no image decoder is wired up. ` +
+        `Set compositor.decodeImageFile = (path) => ({ pixels, width, height }).`);
+    }
+    for (const lut of preset.textures) {
+      if (!lut.exists) {
+        throw new Error(`preset lookup texture not found: ${lut.path}`);
+      }
+      const decoded = this.decodeImageFile(lut.path);
+      if (!decoded) throw new Error(`preset lookup texture failed to decode: ${lut.path}`);
+      const lutIds = new Uint32Array(1);
+      gl.glGenTextures(1, lutIds);
+      const texture = lutIds[0];
+      gl.glBindTexture(C.TEXTURE_2D, texture);
+      gl.glTexImage2D(C.TEXTURE_2D, 0, C.RGBA, decoded.width, decoded.height,
+        0, C.RGBA, C.UNSIGNED_BYTE, decoded.pixels);
+      const wrap = lut.wrapMode === 'repeat' ? C.REPEAT : C.CLAMP_TO_EDGE;
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_WRAP_S, wrap);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_WRAP_T, wrap);
+      if (lut.mipmap) {
+        gl.glGenerateMipmap?.(C.TEXTURE_2D);
+        gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER,
+          lut.linear ? C.LINEAR_MIPMAP_LINEAR : C.NEAREST_MIPMAP_NEAREST);
+      } else {
+        gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, lut.linear ? C.LINEAR : C.NEAREST);
+      }
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, lut.linear ? C.LINEAR : C.NEAREST);
+      chain.luts.set(lut.name, texture);
+    }
   }
 
   createTexture(pixels, width, height) {

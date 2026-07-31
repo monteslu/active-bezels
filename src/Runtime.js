@@ -1,4 +1,7 @@
 import { performance } from 'node:perf_hooks';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { ActiveBezelPackage } from './Package.js';
 import { matchActiveBezel } from './Matcher.js';
 import { ActiveBezelConfig } from './Config.js';
@@ -220,6 +223,20 @@ export class ActiveBezelRuntime {
           return this.compositor.surfaceFilter(source, destination, src,
             this._gamePixels, this._gameWidth, this._gameHeight);
         },
+        /*
+         * Run a multi-pass `.glslp` preset from the package into a surface.
+         * `surface_filter` covers single-shader effects; this covers the
+         * chains (crt-royale is twelve passes) that cannot be one shader.
+         */
+        surface_preset: (source, destination, ptr, length) => {
+          const name = readGuestString(this, ptr, length);
+          if (!name) return 0;
+          const resolved = this.assetPath?.(name);
+          if (!resolved) return 0;
+          return this.compositor.surfacePreset(source, destination, resolved,
+            this._gamePixels, this._gameWidth, this._gameHeight);
+        },
+        /* see assetPath() below */
         command_quad: (ptr, handle, rgba) => {
           /* eight doubles: tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y */
           const memory = this.instance?.exports?.memory;
@@ -401,6 +418,38 @@ export class ActiveBezelRuntime {
    * which case the OLD package stays live, because a broken repack should
    * not take a working bezel down with it.
    */
+  /*
+   * Materialise a package asset on disk and return its absolute path.
+   *
+   * Almost everything a bezel uses is read straight out of the package in
+   * memory. A `.glslp` preset cannot be: it is a file that references OTHER
+   * files by relative path (`shader0 = "../blurs/blur9fast-vertical.glsl"`),
+   * and resolving those means a real directory.
+   *
+   * So the whole package is unpacked once, on first request, into a temp
+   * directory keyed by the package's content hash -- which means an unchanged
+   * package reuses the same extraction across runs, and an edited one gets a
+   * fresh directory rather than a stale mix. Nothing is unpacked unless a
+   * preset is actually used.
+   */
+  assetPath(name) {
+    if (!this.package.has(name)) return null;
+    if (!this._assetDir) {
+      const key = this.package.archiveSha256?.slice(0, 16) ?? 'nohash';
+      this._assetDir = join(tmpdir(), `active-bezel-assets-${key}`);
+      for (const entry of this.package.entries.keys()) {
+        const target = join(this._assetDir, entry);
+        /* The package format already rejects unsafe names on read; re-check
+         * here because this writes to the filesystem, where a '..' would
+         * escape the temp directory rather than just fail a lookup. */
+        if (!target.startsWith(this._assetDir)) continue;
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, this.package.entries.get(entry));
+      }
+    }
+    return join(this._assetDir, name);
+  }
+
   async reloadAssets() {
     if (!this.packagePath) return false;
     let next;
@@ -411,6 +460,8 @@ export class ActiveBezelRuntime {
       return false;
     }
     this.package = next;
+    /* A new package means the old extraction describes the previous one. */
+    this._assetDir = null;
     this.event(AB_EVENT.ASSETS_RELOADED);
     return true;
   }

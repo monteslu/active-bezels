@@ -597,6 +597,21 @@ export class ActiveBezelCompositor {
     return 0;                          /* no shader stage on the CPU path */
   }
 
+  /*
+   * Run a multi-pass `.glslp` preset from the package into a surface.
+   *
+   * Single-pass shaders go through surfaceFilter; this is for the presets that
+   * are a CHAIN -- crt-royale is twelve passes with six lookup textures --
+   * which cannot be expressed as one fragment shader no matter how large.
+   *
+   * Same contract as surfaceFilter: the CPU compositor reports failure rather
+   * than quietly producing an unfiltered picture.
+   */
+  surfacePreset(source, destination, presetPath) {
+    void source; void destination; void presetPath;
+    return 0;
+  }
+
   drawGame(x, y, w, h, sampling = 0) {
     this._push({ kind: 'game', x, y, w, h, sampling });
   }
