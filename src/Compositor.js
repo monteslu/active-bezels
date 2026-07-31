@@ -61,11 +61,14 @@ function blitNearest(src, sw, sh, dst, dw, dh, rect, clip) {
   }
   /* Sampling is parameterised by the FULL destination rect, not the clipped
    * one -- otherwise clipping an image would stretch what remains instead of
-   * cropping it. */
-  const full = logicalRect(rect, dw, dh);
-  const rw = Math.max(1, full.x1 - full.x0);
-  const rh = Math.max(1, full.y1 - full.y0);
-  const ox = full.x0, oy = full.y0;
+   * cropping it. That includes the SCREEN EDGE: logicalRect clamps to the
+   * output, so a rect hanging off the right edge came back narrower and the
+   * remaining pixels sampled a compressed texel grid -- the GPU backend
+   * crops there, and the last strip tile diverged by whole texels. The
+   * sampling basis must come from the unclamped extent. */
+  const rw = Math.max(1, Math.ceil((rect.x + rect.w) * dw / LOGICAL_WIDTH) - Math.floor(rect.x * dw / LOGICAL_WIDTH));
+  const rh = Math.max(1, Math.ceil((rect.y + rect.h) * dh / LOGICAL_HEIGHT) - Math.floor(rect.y * dh / LOGICAL_HEIGHT));
+  const ox = Math.floor(rect.x * dw / LOGICAL_WIDTH), oy = Math.floor(rect.y * dh / LOGICAL_HEIGHT);
   // Optional SOURCE sub-rectangle. Without it a texture can only ever be drawn
   // whole, which forces atlas users into one texture per sprite -- and for a
   // tile renderer that means one command per PIXEL instead of per tile.
@@ -104,20 +107,22 @@ function blitLinear(src, sw, sh, dst, dw, dh, rect, clip) {
     x1 = Math.min(x1, c.x1); y1 = Math.min(y1, c.y1);
     if (x1 <= x0 || y1 <= y0) return;
   }
-  const rw = Math.max(1, x1 - x0);
-  const rh = Math.max(1, y1 - y0);
+  /* Unclamped sampling basis -- same screen-edge reasoning as blitNearest. */
+  const rw = Math.max(1, Math.ceil((rect.x + rect.w) * dw / LOGICAL_WIDTH) - Math.floor(rect.x * dw / LOGICAL_WIDTH));
+  const rh = Math.max(1, Math.ceil((rect.y + rect.h) * dh / LOGICAL_HEIGHT) - Math.floor(rect.y * dh / LOGICAL_HEIGHT));
+  const oxl = Math.floor(rect.x * dw / LOGICAL_WIDTH), oyl = Math.floor(rect.y * dh / LOGICAL_HEIGHT);
   // Source sub-rectangle, as in blitNearest. Sampling is clamped INSIDE the
   // sub-rect so a filtered atlas tile cannot bleed in its neighbours' pixels.
   const srcX = rect.sx ?? 0, srcY = rect.sy ?? 0;
   const srcW = rect.sw ?? sw, srcH = rect.sh ?? sh;
   const maxX = srcX + srcW - 1, maxY = srcY + srcH - 1;
   for (let y = y0; y < y1; y++) {
-    const fy = Math.max(srcY, Math.min(maxY, srcY + ((y - oy + 0.5) * srcH / rh) - 0.5));
+    const fy = Math.max(srcY, Math.min(maxY, srcY + ((y - oyl + 0.5) * srcH / rh) - 0.5));
     const ya = Math.floor(fy);
     const yb = Math.min(maxY, ya + 1);
     const ty = fy - ya;
     for (let x = x0; x < x1; x++) {
-      const fx = Math.max(srcX, Math.min(maxX, srcX + ((x - ox + 0.5) * srcW / rw) - 0.5));
+      const fx = Math.max(srcX, Math.min(maxX, srcX + ((x - oxl + 0.5) * srcW / rw) - 0.5));
       const xa = Math.floor(fx);
       const xb = Math.min(maxX, xa + 1);
       const tx = fx - xa;

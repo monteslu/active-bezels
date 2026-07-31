@@ -389,9 +389,42 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       gl.glTexImage2D(C.TEXTURE_2D, 0, C.RGBA, sourceWidth, sourceHeight,
         0, C.RGBA, C.UNSIGNED_BYTE, pixels);
     }
+    /* NEAREST parity with the CPU blitter.
+     *
+     * blitNearest picks texel floor((x - x0) * srcW / rw): it samples at the
+     * output pixel's LEFT EDGE. GL samples at the fragment CENTER (x + 0.5),
+     * one texel later wherever a texel boundary falls inside a pixel -- on
+     * the 256x224 -> 1411x1080 game rect that is ~276k differing pixels on a
+     * checkerboard. Shifting the UV mapping back half an OUTPUT pixel makes
+     * the fragment-center sample land exactly on the CPU's sample points.
+     *
+     * The +1.5e-4 texel bias handles sample points that land EXACTLY on a
+     * texel boundary (possible when srcW/rw is rational with a small
+     * denominator, e.g. tests at 160x90 where 16/120 = 2/15): float32
+     * interpolation wobbles either side of the exact integer and floor()
+     * would pick a texel at random. Sizing matters: sample points can sit
+     * 1/rw texel from a boundary (256/1411 puts one 7e-4 away), so the bias
+     * must stay under half that gap -- 1e-3 flipped a real column at
+     * x=237 -- while staying above interpolation noise (~3e-5 texel).
+     * Linear sampling is already center-based on the CPU, so no shift. */
+    let uv = sourceUv(command, sourceWidth, sourceHeight)
+      ?? { u0: 0, v0: 0, u1: 1, v1: 1 };
+    if (!command.sampling) {
+      const sx = this.outputWidth / LOGICAL_WIDTH;
+      const sy = this.outputHeight / LOGICAL_HEIGHT;
+      const rw = Math.ceil((command.x + command.w) * sx) - Math.floor(command.x * sx);
+      const rh = Math.ceil((command.y + command.h) * sy) - Math.floor(command.y * sy);
+      if (rw > 0 && rh > 0) {
+        const spanU = uv.u1 - uv.u0, spanV = uv.v1 - uv.v0;
+        const srcW = command.sw > 0 ? command.sw : sourceWidth;
+        const srcH = command.sh > 0 ? command.sh : sourceHeight;
+        const du = spanU * 0.5 / rw - (spanU / srcW) * 1.5e-4;
+        const dv = spanV * 0.5 / rh - (spanV / srcH) * 1.5e-4;
+        uv = { u0: uv.u0 - du, v0: uv.v0 - dv, u1: uv.u1 - du, v1: uv.v1 - dv };
+      }
+    }
     this._geometry(this.textureProgram,
-      quad(command.x, command.y, command.w, command.h,
-           sourceUv(command, sourceWidth, sourceHeight)));
+      quad(command.x, command.y, command.w, command.h, uv));
     gl.glUniform1i(gl.glGetUniformLocation(this.textureProgram, 'u_texture'), 0);
     gl.glDrawArrays(C.TRIANGLES, 0, 6);
   }

@@ -417,6 +417,42 @@ test('transforms and mesh batches match between CPU and GPU', (t) => {
   gpu.destroy();
 });
 
+test('GPU nearest sampling picks the same texels as the CPU blitter', (t) => {
+  // The real SMB/Zanac geometry: a 256x224 core frame scaled to 1411x1080.
+  // Fragment-center sampling picked a later texel than the CPU\'s left-edge
+  // floor() wherever a texel boundary fell inside an output pixel -- 276k
+  // differing pixels on this checkerboard before the UV half-pixel shift.
+  // Zero tolerance: any regression here is a real sampling divergence.
+  const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 1920, outputHeight: 1080 });
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  const cpu = new ActiveBezelCompositor({ outputWidth: 1920, outputHeight: 1080 });
+  const GW = 256, GH = 224;
+  const game = new Uint8Array(GW * GH * 4);
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    const o = (y * GW + x) * 4;
+    game[o] = ((x ^ y) & 1) ? 255 : 0;
+    game[o + 1] = (y & 1) ? 200 : 40;
+    game[o + 2] = (x & 1) ? 180 : 60;
+    game[o + 3] = 255;
+  }
+  const scene = (c) => {
+    c.reset(); c.clear(0x101020ff);
+    c.drawGame(0, 0, 1411, 1080);
+    return c.compose(game, GW, GH).rgba;
+  };
+  const a = scene(cpu);
+  const b = scene(gpu);
+  let lit = 0;
+  for (let i = 0; i < a.length; i += 4) if (a[i] || a[i + 1] || a[i + 2]) lit++;
+  assert.ok(lit > 100_000, 'control: the game frame actually drew');
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) diff++;
+  }
+  assert.equal(diff, 0, `CPU and GPU picked different texels for ${diff} pixels`);
+  gpu.destroy();
+});
+
 test('the transform stack restores exactly', () => {
   const c = new ActiveBezelCompositor({ outputWidth: 32, outputHeight: 18 });
   c.reset();
