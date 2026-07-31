@@ -402,6 +402,24 @@ test('transforms and mesh batches match between CPU and GPU', (t) => {
       { x: 600, y: 600, rgba: 0x00ff00ff },
       { x: 400, y: 950, rgba: 0x0000ffff },
     ]);
+    // textured mesh with a vertex tint: one white texture, coloured per draw.
+    // Both backends must modulate identically.
+    const white = c.createTexture(new Uint8Array(16).fill(255), 2, 2);
+    c.mesh([
+      { x: 1000, y: 600, u: 0, v: 0, rgba: 0xff8000ff },
+      { x: 1400, y: 600, u: 1, v: 0, rgba: 0xff8000ff },
+      { x: 1200, y: 950, u: 0.5, v: 1, rgba: 0xff8000ff },
+    ], white);
+    // a ROTATED texture must land at its transformed position on both
+    // backends (it becomes a textured mesh; it used to render axis-aligned
+    // at the untransformed origin).
+    const mark = c.createTexture(new Uint8Array([
+      255, 0, 255, 255, 255, 0, 255, 255,
+      255, 0, 255, 255, 255, 0, 255, 255,
+    ]), 2, 2);
+    c.pushTransform(); c.translate(1650, 200); c.rotate(Math.PI / 4);
+    c.drawTexture(mark, -80, -80, 160, 160);
+    c.popTransform();
     return c.compose(game, 1, 1).rgba;
   };
   const a = scene(cpu);
@@ -414,6 +432,11 @@ test('transforms and mesh batches match between CPU and GPU', (t) => {
   let worst = 0;
   for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
   assert.ok(worst <= 1, `CPU/GPU differ by ${worst}, expected <= 1 (rounding only)`);
+  // the rotated texture's magenta must appear AT the transformed position
+  const cx = Math.round(1650 / 1920 * 200), cy = Math.round(200 / 1080 * 120);
+  const o = (cy * 200 + cx) * 4;
+  assert.deepEqual([a[o], a[o + 1], a[o + 2]], [255, 0, 255], 'rotated texture centre (CPU)');
+  assert.deepEqual([b[o], b[o + 1], b[o + 2]], [255, 0, 255], 'rotated texture centre (GPU)');
   gpu.destroy();
 });
 
@@ -536,6 +559,44 @@ test('checked-in C and Lua reference packages validate and compile', async () =>
   }
 });
 
+test('a picture effect filters the scene without flipping it', (t) => {
+  const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 192, outputHeight: 108 });
+  if (!gpu) return t.skip('OpenGL ES context unavailable');
+  // Asymmetric scene: red band TOP, blue band BOTTOM. A pass-through shader
+  // must keep them where they are -- the scene texture is rendered bottom-up,
+  // and sampling it top-down showed the whole frame upside down while every
+  // symmetric shader (invert, vignette) hid the flip completely.
+  const scene = () => {
+    gpu.reset(); gpu.clear(0x000000ff);
+    gpu.fillRect(0, 0, 1920, 200, 0xff0000ff);
+    gpu.fillRect(0, 880, 1920, 200, 0x0000ffff);
+  };
+  scene();
+  assert.equal(gpu.setEffect(`#version 300 es
+    precision mediump float;
+    in vec2 v_uv; out vec4 out_color;
+    uniform sampler2D u_texture;
+    void main() { out_color = texture(u_texture, v_uv); }`), 1, 'shader must compile');
+  scene();
+  const out = gpu.compose(new Uint8Array(4), 1, 1).rgba;
+  const px = (x, y) => [...out.subarray((y * 192 + x) * 4, (y * 192 + x) * 4 + 3)];
+  assert.deepEqual(px(96, 5), [255, 0, 0], 'top band must stay red');
+  assert.deepEqual(px(96, 102), [0, 0, 255], 'bottom band must stay blue');
+  // and the effect must actually run: invert turns the red band cyan
+  assert.equal(gpu.setEffect(`#version 300 es
+    precision mediump float;
+    in vec2 v_uv; out vec4 out_color;
+    uniform sampler2D u_texture;
+    void main() { vec4 c = texture(u_texture, v_uv); out_color = vec4(1.0 - c.rgb, c.a); }`), 1);
+  scene();
+  const inverted = gpu.compose(new Uint8Array(4), 1, 1).rgba;
+  const ipx = (x, y) => [...inverted.subarray((y * 192 + x) * 4, (y * 192 + x) * 4 + 3)];
+  assert.deepEqual(ipx(96, 5), [0, 255, 255], 'invert must reach the pixels');
+  // a broken shader is refused and the unfiltered picture survives
+  assert.equal(gpu.setEffect('void main() { this is not glsl'), 0, 'bad shader must be refused');
+  gpu.destroy();
+});
+
 test('the prebuilt Lua runtime runs a script against the full ab API', async (t) => {
   // The runtime wasm is the packaged entry; the bezel is assets/main.lua.
   // This is the no-compiler iteration path, so what matters is that a script
@@ -546,6 +607,12 @@ test('the prebuilt Lua runtime runs a script against the full ab API', async (t)
   const runtimeWasm = await fs.readFile(new URL('../runtimes/lua/main.wasm', import.meta.url));
   await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifestFor(rom)));
   await fs.writeFile(path.join(dir, 'main.wasm'), runtimeWasm);
+  await fs.mkdir(path.join(dir, 'assets'));
+  for (const asset of ['badge.png', 'roboto-medium.ttf']) {
+    await fs.copyFile(
+      new URL(`../examples/lua-native/assets/${asset}`, import.meta.url),
+      path.join(dir, 'assets', asset));
+  }
   await fs.writeFile(path.join(dir, 'main.lua'), `
     local booted = false
     function init() booted = true end
@@ -566,10 +633,25 @@ test('the prebuilt Lua runtime runs a script against the full ab API', async (t)
       local co = coroutine.create(function(a) return a + 1 end)
       local ok, v = coroutine.resume(co, 41)
       assert(ok and v == 42, 'coroutines must run')
+      -- constants tables mirror the C SDK defines
+      assert(ab.EVENT.ASSETS_RELOADED == 6 and ab.FIT.INTEGER == 3
+             and ab.SAMPLE.LINEAR == 1 and ab.BTN.START == 3 and ab.BTN.MASK == 256)
+      -- batteries: PNG decode -> texture, TTF -> tinted mesh text
+      local badge = ab.image('assets/badge.png')
+      assert(badge.texture > 0 and badge.width == 48 and badge.height == 48, 'png decode')
+      ab.draw_texture(badge.texture, 0, 0, 96, 96)
+      local font = ab.font('assets/roboto-medium.ttf')
+      local wide = ab.measure(font, 'MMMM', 40)
+      local thin = ab.measure(font, 'iiii', 40)
+      assert(wide > thin and thin > 0, 'measure must see glyph metrics')
+      ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
+      -- integer reads: heap is all 0x41
       local ram = ab.region('system_ram')
       assert(ram ~= nil, 'system_ram must resolve')
       assert(ab.read_u8(ram, 0) == 65, 'expected the host heap byte')
       assert(#ab.read(ram, 0, 4) == 4, 'bulk read length')
+      assert(ab.read_u16(ram, 0) == 0x4141 and ab.read_u32(ram, 0, true) == 0x41414141,
+             'multi-byte reads over the region')
       assert(booted, 'init() must have run first')
     end
   `);
@@ -592,6 +674,11 @@ test('the prebuilt Lua runtime runs a script against the full ab API', async (t)
   assert.ok(kinds.includes('rect'), 'fill_rect must reach the compositor');
   assert.ok(kinds.includes('text'), 'text must reach the compositor');
   assert.ok(kinds.includes('triangle'), 'triangle must reach the compositor');
+  const meshes = runtime.compositor.commands.filter((c) => c.kind === 'mesh');
+  assert.ok(meshes.some((m) => m.handle > 0 && m.vertices.length >= 30
+    && (m.vertices[0].rgba >>> 0) === 0xff0000ff),
+    'ab.print must emit a textured mesh tinted by vertex colour');
+  assert.ok(kinds.includes('texture'), 'the decoded PNG must draw as a texture');
   // A Lua assert() failing inside tick() must NOT be silent: the runtime
   // catches it and draws an error panel instead. Prove the happy path stayed
   // happy by ticking again and checking the error text never appeared.

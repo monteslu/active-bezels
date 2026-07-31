@@ -190,7 +190,20 @@ function drawMeshTriangle(dst, dw, dh, v0, v1, v2, tex, clip) {
         const tx = Math.min(tex.width - 1, Math.max(0, Math.floor(u * tex.width)));
         const ty = Math.min(tex.height - 1, Math.max(0, Math.floor(vv * tex.height)));
         const ti = (ty * tex.width + tx) * 4;
-        r = tex.pixels[ti]; g = tex.pixels[ti + 1]; b = tex.pixels[ti + 2]; a = tex.pixels[ti + 3];
+        /* Modulate by the interpolated vertex colour -- the standard sprite
+         * tint. A white atlas (glyphs, icons) can then be drawn in any colour
+         * without one texture per tint. Vertices default to 0xffffffff, so a
+         * mesh that never sets rgba is untouched. The GPU shader multiplies
+         * identically. */
+        const c0 = (v0.rgba ?? 0xffffffff) >>> 0;
+        const c1 = (v1.rgba ?? 0xffffffff) >>> 0;
+        const c2 = (v2.rgba ?? 0xffffffff) >>> 0;
+        const mr = (l0 * ((c0 >>> 24) & 255) + l1 * ((c1 >>> 24) & 255) + l2 * ((c2 >>> 24) & 255)) / 255;
+        const mg = (l0 * ((c0 >>> 16) & 255) + l1 * ((c1 >>> 16) & 255) + l2 * ((c2 >>> 16) & 255)) / 255;
+        const mb = (l0 * ((c0 >>> 8) & 255) + l1 * ((c1 >>> 8) & 255) + l2 * ((c2 >>> 8) & 255)) / 255;
+        const ma = (l0 * (c0 & 255) + l1 * (c1 & 255) + l2 * (c2 & 255)) / 255;
+        r = tex.pixels[ti] * mr; g = tex.pixels[ti + 1] * mg;
+        b = tex.pixels[ti + 2] * mb; a = tex.pixels[ti + 3] * ma;
       } else {
         const c0 = v0.rgba >>> 0, c1 = v1.rgba >>> 0, c2 = v2.rgba >>> 0;
         r = l0 * ((c0 >>> 24) & 255) + l1 * ((c1 >>> 24) & 255) + l2 * ((c2 >>> 24) & 255);
@@ -393,8 +406,7 @@ export class ActiveBezelCompositor {
       return [{ ...command, x, y, w, h }];
     }
 
-    /* Rotated: emit the quad's two triangles. Textured kinds keep their UVs so
-     * a rotated sprite still samples correctly. */
+    /* Rotated: emit real geometry. A rotated "rect" is not a rect. */
     const [ax, ay] = this._point(command.x, command.y);
     const [bx, by] = this._point(command.x + command.w, command.y);
     const [cx, cy] = this._point(command.x + command.w, command.y + command.h);
@@ -405,7 +417,35 @@ export class ActiveBezelCompositor {
         { kind: 'triangle', x1: ax, y1: ay, x2: cx, y2: cy, x3: dx, y3: dy, rgba: command.rgba },
       ];
     }
-    return [{ ...command, quad: [ax, ay, bx, by, cx, cy, dx, dy] }];
+    if (k === 'texture') {
+      /* Rotated textures become a textured MESH: both backends already
+       * rasterize those with UV sampling. The old path attached a `quad`
+       * field nobody consumed, so a rotated sprite silently rendered
+       * axis-aligned at its UNtransformed position -- the Lua starter's
+       * spinning badge landed in the screen corner. White vertex colour is
+       * the modulation identity. */
+      const tex = this.textures.get(command.handle);
+      if (tex) {
+        const useSrc = (command.sw ?? 0) > 0 && (command.sh ?? 0) > 0;
+        const u0 = useSrc ? command.sx / tex.width : 0;
+        const v0 = useSrc ? command.sy / tex.height : 0;
+        const u1 = useSrc ? (command.sx + command.sw) / tex.width : 1;
+        const v1 = useSrc ? (command.sy + command.sh) / tex.height : 1;
+        const W = 0xffffffff;
+        return [{ kind: 'mesh', handle: command.handle, vertices: [
+          { x: ax, y: ay, u: u0, v: v0, rgba: W },
+          { x: bx, y: by, u: u1, v: v0, rgba: W },
+          { x: cx, y: cy, u: u1, v: v1, rgba: W },
+          { x: ax, y: ay, u: u0, v: v0, rgba: W },
+          { x: cx, y: cy, u: u1, v: v1, rgba: W },
+          { x: dx, y: dy, u: u0, v: v1, rgba: W },
+        ] }];
+      }
+    }
+    /* game/surface under rotation stays axis-aligned at the transformed
+     * origin: those carry raw pixels, not a persistent texture the mesh
+     * path can sample. Position is honoured; the rotation is not. */
+    return [{ ...command, x: Math.min(ax, bx, cx, dx), y: Math.min(ay, by, cy, dy) }];
   }
 
   _push(command) {

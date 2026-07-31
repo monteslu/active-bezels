@@ -228,7 +228,11 @@ and retain the pre-existing fast paths.
 ships that wasm as its `entry` plus its own `main.lua` (or `assets/main.lua`);
 iteration is edit + repack, with no compiler in the loop. The global `ab`
 table exposes the full import surface -- drawing, transforms, textures, mesh,
-shader effects, live memory regions, config, input, time. The runtime
+shader effects, live memory regions, config, input, time -- plus batteries:
+`ab.image` (PNG/JPG/GIF/BMP via stb_image), `ab.font`/`ab.print`/`ab.measure`
+(anti-aliased TrueType via stb_truetype, one white atlas tinted through
+textured-mesh vertex colour), multi-byte region reads, `ab.loadasset`, and
+constant tables (EVENT/FIT/SAMPLE/DEVICE/BTN). The runtime
 re-reads the script on ASSETS_RELOADED and renders script errors on screen
 instead of dying, so a broken bezel is a visible, fixable state. The build
 asserts the artifact imports only `ab_host` (no env, no WASI) and exports the

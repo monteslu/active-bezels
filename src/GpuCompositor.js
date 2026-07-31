@@ -207,7 +207,8 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       in vec2 v_uv;
       in vec4 v_color;
       out vec4 out_color;
-      void main() { out_color = texture(u_texture, v_uv); }`);
+      /* texture * vertex colour: same modulation as the CPU rasteriser. */
+      void main() { out_color = texture(u_texture, v_uv) * v_color; }`);
     this.textureProgram = program(`#version 300 es
       precision mediump float;
       uniform sampler2D u_texture;
@@ -545,7 +546,13 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       gl.glUseProgram(this.effect.program);
       gl.glActiveTexture(C.TEXTURE0);
       gl.glBindTexture(C.TEXTURE_2D, this.sceneTexture);
-      this._geometry(this.effect.program, quad(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT));
+      /* The scene was RENDERED into this texture, so its rows run bottom-up
+       * (GL framebuffer origin); sampling it with the same top-down UV
+       * convention as an uploaded texture shows the whole frame upside
+       * down -- the Lua starter's first shader run flipped everything,
+       * vignette included. Invert V for the effect quad only. */
+      this._geometry(this.effect.program,
+        quad(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, { u0: 0, v0: 1, u1: 1, v1: 0 }));
       const u = (name) => gl.glGetUniformLocation(this.effect.program, name);
       gl.glUniform1i(u('u_texture'), 0);
       gl.glUniform2f(u('u_resolution'), this.outputWidth, this.outputHeight);
