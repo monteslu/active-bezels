@@ -1,0 +1,5 @@
+# mruby is FETCHED by build.sh (a git clone at a pinned tag), not vendored.
+# Unlike the Lua runtime's small tarball, this checkout is ~63MB and carries
+# its own .git plus a full build/ tree -- committing it would put a nested
+# repository in this one. build.sh recreates it from scratch.
+vendor/

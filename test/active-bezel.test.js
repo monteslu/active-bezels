@@ -618,120 +618,357 @@ test('a picture effect filters the scene without flipping it', (t) => {
   gpu.destroy();
 });
 
-test('the prebuilt Lua runtime runs a script against the full ab API', async (t) => {
-  // The runtime wasm is the packaged entry; the bezel is assets/main.lua.
-  // This is the no-compiler iteration path, so what matters is that a script
-  // reaches the same command stream a C guest would.
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-lua-native-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const rom = Buffer.from([9, 9, 9]);
-  const runtimeWasm = await fs.readFile(new URL('../runtimes/lua/main.wasm', import.meta.url));
-  await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifestFor(rom)));
-  await fs.writeFile(path.join(dir, 'main.wasm'), runtimeWasm);
-  await fs.mkdir(path.join(dir, 'assets'));
-  for (const asset of ['badge.png', 'roboto-medium.ttf']) {
-    await fs.copyFile(
-      new URL(`../examples/lua-native/assets/${asset}`, import.meta.url),
-      path.join(dir, 'assets', asset));
+/*
+ * The prebuilt runtimes: one table, four languages.
+ *
+ * These wasms are the zero-toolchain authoring path -- a bezel ships the
+ * runtime plus a script, and romdev can mint one by copying two files. What
+ * matters is that EVERY language reaches the SAME command stream a C guest
+ * would, so the tests are written once and parameterised by language.
+ *
+ * A runtime that has not been built yet is skipped, not failed: the repo
+ * ships prebuilt wasms, but a fresh clone may not have run every build.sh.
+ */
+const RUNTIMES = [
+  {
+    lang: 'lua', script: 'main.lua', wasm: '../runtimes/lua/main.wasm',
+    // exercises: constants, live memory, config, stdlib, PNG, TTF, mesh
+    api: `
+      local booted = false
+      function init() booted = true end
+      function tick(frame)
+        assert(booted, 'init() must have run first')
+        ab.clear(ab.rgb(1, 2, 3))
+        ab.fill_rect(10, 20, 100, 50, 0xff0000ff)
+        ab.text('lua ' .. frame, 40, 40, 30, 0xffffffff)
+        ab.push_transform(); ab.translate(5, 5)
+        ab.triangle(0, 0, 50, 0, 0, 50, 0x00ff00ff)
+        ab.pop_transform()
+        assert(ab.EVENT.ASSETS_RELOADED == 6 and ab.FIT.INTEGER == 3
+               and ab.SAMPLE.LINEAR == 1 and ab.BTN.START == 3 and ab.BTN.MASK == 256)
+        assert(ab.config_bool('map') == true)
+        assert(('%03d'):format(7) == '007')
+        local ram = ab.region('system_ram')
+        assert(ram ~= nil and ab.read_u8(ram, 0) == 65)
+        assert(#ab.read(ram, 0, 4) == 4)
+        assert(ab.read_u16(ram, 0) == 0x4141 and ab.read_u32(ram, 0, true) == 0x41414141)
+        local badge = ab.image('assets/badge.png')
+        assert(badge.texture > 0 and badge.width == 48 and badge.height == 48)
+        ab.draw_texture(badge.texture, 0, 0, 96, 96)
+        local font = ab.font('assets/roboto-medium.ttf')
+        assert(ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40))
+        ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
+        ab.mesh({ { x = 0, y = 0, rgba = 0xff0000ff },
+                  { x = 9, y = 0, rgba = 0x00ff00ff },
+                  { x = 0, y = 9, rgba = 0x0000ffff } })
+      end`,
+    broken: 'this is not lua at all (',
+    throws: 'function tick(frame) error("boom in tick") end',
+    panel: 'lua bezel error',
+  },
+  {
+    lang: 'python', script: 'main.py', wasm: '../runtimes/python/main.wasm',
+    api: `
+booted = False
+def init():
+    global booted
+    booted = True
+def tick(frame):
+    assert booted, 'init() must have run first'
+    ab.clear(ab.rgb(1, 2, 3))
+    ab.fill_rect(10, 20, 100, 50, 0xff0000ff)
+    ab.text('py ' + str(frame), 40, 40, 30, 0xffffffff)
+    ab.push_transform(); ab.translate(5, 5)
+    ab.triangle(0, 0, 50, 0, 0, 50, 0x00ff00ff)
+    ab.pop_transform()
+    assert ab.EVENT['ASSETS_RELOADED'] == 6 and ab.FIT['INTEGER'] == 3
+    assert ab.SAMPLE['LINEAR'] == 1 and ab.BTN['START'] == 3 and ab.BTN['MASK'] == 256
+    assert ab.config_bool('map') == True
+    assert '%03d' % 7 == '007'
+    ram = ab.region('system_ram')
+    assert ram is not None and ab.read_u8(ram, 0) == 65
+    assert len(ab.read(ram, 0, 4)) == 4
+    assert ab.read_u16(ram, 0) == 0x4141 and ab.read_u32(ram, 0, True) == 0x41414141
+    badge = ab.image('assets/badge.png')
+    assert badge['texture'] > 0 and badge['width'] == 48 and badge['height'] == 48
+    ab.draw_texture(badge['texture'], 0, 0, 96, 96)
+    font = ab.font('assets/roboto-medium.ttf')
+    assert ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40)
+    ab.draw_text(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
+    ab.mesh([{'x': 0, 'y': 0, 'rgba': 0xff0000ff},
+             {'x': 9, 'y': 0, 'rgba': 0x00ff00ff},
+             {'x': 0, 'y': 9, 'rgba': 0x0000ffff}])
+`,
+    broken: 'this is not python at all (',
+    throws: 'def tick(frame):\n    raise ValueError("boom in tick")\n',
+    panel: 'python bezel error',
+  },
+  {
+    lang: 'js', script: 'main.js', wasm: '../runtimes/js/main.wasm',
+    api: `
+      let booted = false;
+      function init() { booted = true; }
+      function tick(frame) {
+        if (!booted) throw new Error('init() must have run first');
+        ab.clear(ab.rgb(1, 2, 3));
+        ab.fill_rect(10, 20, 100, 50, 0xff0000ff);
+        ab.text('js ' + frame, 40, 40, 30, 0xffffffff);
+        ab.push_transform(); ab.translate(5, 5);
+        ab.triangle(0, 0, 50, 0, 0, 50, 0x00ff00ff);
+        ab.pop_transform();
+        if (ab.EVENT.ASSETS_RELOADED !== 6 || ab.FIT.INTEGER !== 3
+            || ab.SAMPLE.LINEAR !== 1 || ab.BTN.START !== 3 || ab.BTN.MASK !== 256)
+          throw new Error('constants');
+        if (ab.config_bool('map') !== true) throw new Error('config');
+        const ram = ab.region('system_ram');
+        if (ram === null || ab.read_u8(ram, 0) !== 65) throw new Error('ram');
+        if (ab.read(ram, 0, 4).length !== 4) throw new Error('bulk read');
+        if (ab.read_u16(ram, 0) !== 0x4141 || ab.read_u32(ram, 0, true) !== 0x41414141)
+          throw new Error('multibyte');
+        const badge = ab.image('assets/badge.png');
+        if (!(badge.texture > 0 && badge.width === 48 && badge.height === 48))
+          throw new Error('png');
+        ab.draw_texture(badge.texture, 0, 0, 96, 96);
+        const font = ab.font('assets/roboto-medium.ttf');
+        if (!(ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40)))
+          throw new Error('measure');
+        ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0));
+        ab.mesh([{ x: 0, y: 0, rgba: 0xff0000ff },
+                 { x: 9, y: 0, rgba: 0x00ff00ff },
+                 { x: 0, y: 9, rgba: 0x0000ffff }]);
+      }`,
+    broken: 'function tick( {{{ this is not js',
+    throws: 'function tick(frame) { throw new Error("boom in tick"); }',
+    panel: 'js runtime',
+  },
+  {
+    lang: 'ruby', script: 'main.rb', wasm: '../runtimes/ruby/main.wasm',
+    api: `
+$booted = false
+def init
+  $booted = true
+end
+def tick(frame)
+  raise 'init() must have run first' unless $booted
+  AB.clear(AB.rgb(1, 2, 3))
+  AB.fill_rect(10, 20, 100, 50, 0xff0000ff)
+  AB.text('rb ' + frame.to_s, 40, 40, 30, 0xffffffff)
+  AB.push_transform; AB.translate(5, 5)
+  AB.triangle(0, 0, 50, 0, 0, 50, 0x00ff00ff)
+  AB.pop_transform
+  raise 'constants' unless AB::EVENT[:ASSETS_RELOADED] == 6 && AB::FIT[:INTEGER] == 3
+  raise 'buttons' unless AB::SAMPLE[:LINEAR] == 1 && AB::BTN[:START] == 3 && AB::BTN[:MASK] == 256
+  raise 'config' unless AB.config_bool('map') == true
+  raise 'format' unless format('%03d', 7) == '007'
+  ram = AB.region('system_ram')
+  raise 'ram' unless ram && AB.read_u8(ram, 0) == 65
+  raise 'bulk' unless AB.read(ram, 0, 4).bytesize == 4
+  raise 'multibyte' unless AB.read_u16(ram, 0) == 0x4141 && AB.read_u32(ram, 0, true) == 0x41414141
+  badge = AB.image('assets/badge.png')
+  raise 'png' unless badge[:texture] > 0 && badge[:width] == 48 && badge[:height] == 48
+  AB.draw_texture(badge[:texture], 0, 0, 96, 96)
+  font = AB.font('assets/roboto-medium.ttf')
+  raise 'measure' unless AB.measure(font, 'MMMM', 40) > AB.measure(font, 'iiii', 40)
+  AB.draw_text(font, 'Hello', 100, 100, 40, AB.rgb(255, 0, 0))
+  AB.mesh([{ x: 0, y: 0, rgba: 0xff0000ff },
+           { x: 9, y: 0, rgba: 0x00ff00ff },
+           { x: 0, y: 9, rgba: 0x0000ffff }])
+end
+`,
+    broken: 'def tick(frame) this is not ruby (((',
+    throws: 'def tick(frame)\n  raise "boom in tick"\nend\n',
+    panel: 'ruby bezel error',
+  },
+];
+
+async function runtimeAvailable(spec) {
+  try {
+    await fs.access(new URL(spec.wasm, import.meta.url));
+    return true;
+  } catch {
+    return false;
   }
-  await fs.writeFile(path.join(dir, 'main.lua'), `
-    local booted = false
-    function init() booted = true end
-    function tick(frame)
-      ab.clear(ab.rgb(1, 2, 3))
-      ab.fill_rect(10, 20, 100, 50, 0xff0000ff)
-      ab.text('lua ' .. frame, 40, 40, 30, 0xffffffff)
-      ab.push_transform(); ab.translate(5, 5)
-      ab.triangle(0, 0, 50, 0, 0, 50, 0x00ff00ff)
-      ab.pop_transform()
-      -- config: manifestFor declares {key='map', type='boolean', default=true}
-      assert(ab.config_bool('map') == true, 'config_bool must see the manifest default')
-      -- the libraries a bezel is promised: string, table, math, utf8, coroutine
-      assert(('%03d'):format(7) == '007')
-      assert(table.concat({1,2,3}, '-') == '1-2-3')
-      assert(math.max(2, 9, 4) == 9)
-      assert(utf8.len('héllo') == 5)
-      local co = coroutine.create(function(a) return a + 1 end)
-      local ok, v = coroutine.resume(co, 41)
-      assert(ok and v == 42, 'coroutines must run')
-      -- constants tables mirror the C SDK defines
-      assert(ab.EVENT.ASSETS_RELOADED == 6 and ab.FIT.INTEGER == 3
-             and ab.SAMPLE.LINEAR == 1 and ab.BTN.START == 3 and ab.BTN.MASK == 256)
-      -- batteries: PNG decode -> texture, TTF -> tinted mesh text
-      local badge = ab.image('assets/badge.png')
-      assert(badge.texture > 0 and badge.width == 48 and badge.height == 48, 'png decode')
-      ab.draw_texture(badge.texture, 0, 0, 96, 96)
-      local font = ab.font('assets/roboto-medium.ttf')
-      local wide = ab.measure(font, 'MMMM', 40)
-      local thin = ab.measure(font, 'iiii', 40)
-      assert(wide > thin and thin > 0, 'measure must see glyph metrics')
-      ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
-      -- integer reads: heap is all 0x41
-      local ram = ab.region('system_ram')
-      assert(ram ~= nil, 'system_ram must resolve')
-      assert(ab.read_u8(ram, 0) == 65, 'expected the host heap byte')
-      assert(#ab.read(ram, 0, 4) == 4, 'bulk read length')
-      assert(ab.read_u16(ram, 0) == 0x4141 and ab.read_u32(ram, 0, true) == 0x41414141,
-             'multi-byte reads over the region')
-      assert(booted, 'init() must have run first')
-    end
-  `);
+}
 
-  const heap = new Uint8Array(65536).fill(65);
-  const host = {
-    core: {
-      HEAPU8: heap,
-      _retro_get_memory_data: (id) => id === 2 ? 1024 : 0,
-      _retro_get_memory_size: (id) => id === 2 ? 2048 : 0,
-    },
-  };
-  const runtime = await ActiveBezelRuntime.create({
-    packagePath: dir, host, romBytes: rom, platform: 'nes',
-    outputWidth: 320, outputHeight: 180,
-  });
-  const frame = runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(255), 4, 4, 1);
-  assert.deepEqual([frame.width, frame.height], [320, 180]);
-  const kinds = runtime.compositor.commands.map((c) => c.kind);
-  assert.ok(kinds.includes('rect'), 'fill_rect must reach the compositor');
-  assert.ok(kinds.includes('text'), 'text must reach the compositor');
-  assert.ok(kinds.includes('triangle'), 'triangle must reach the compositor');
-  const meshes = runtime.compositor.commands.filter((c) => c.kind === 'mesh');
-  assert.ok(meshes.some((m) => m.handle > 0 && m.vertices.length >= 30
-    && (m.vertices[0].rgba >>> 0) === 0xff0000ff),
-    'ab.print must emit a textured mesh tinted by vertex colour');
-  assert.ok(kinds.includes('texture'), 'the decoded PNG must draw as a texture');
-  // A Lua assert() failing inside tick() must NOT be silent: the runtime
-  // catches it and draws an error panel instead. Prove the happy path stayed
-  // happy by ticking again and checking the error text never appeared.
-  runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(255), 4, 4, 2);
-  const texts = runtime.compositor.commands.filter((c) => c.kind === 'text').map((c) => c.text);
-  assert.ok(!texts.some((s) => String(s).includes('error')), `unexpected error text: ${texts}`);
-});
-
-test('the Lua runtime survives a broken script and says so on screen', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-lua-broken-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const rom = Buffer.from([9, 9, 9]);
-  const runtimeWasm = await fs.readFile(new URL('../runtimes/lua/main.wasm', import.meta.url));
+/* A package for one runtime: the wasm as entry, the script, and the two
+ * assets the API test decodes. */
+async function makeRuntimePackage(spec, script, rom, withAssets = true) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `active-bezel-${spec.lang}-`));
   await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifestFor(rom)));
-  await fs.writeFile(path.join(dir, 'main.wasm'), runtimeWasm);
-  await fs.writeFile(path.join(dir, 'main.lua'), 'this is not lua at all (');
-  const host = {
-    core: {
-      HEAPU8: new Uint8Array(65536),
-      _retro_get_memory_data: (id) => id === 2 ? 1024 : 0,
-      _retro_get_memory_size: (id) => id === 2 ? 2048 : 0,
-    },
-  };
-  const runtime = await ActiveBezelRuntime.create({
-    packagePath: dir, host, romBytes: rom, platform: 'nes',
-    outputWidth: 320, outputHeight: 180,
+  await fs.copyFile(new URL(spec.wasm, import.meta.url), path.join(dir, 'main.wasm'));
+  await fs.writeFile(path.join(dir, spec.script), script);
+  if (withAssets) {
+    await fs.mkdir(path.join(dir, 'assets'), { recursive: true });
+    for (const asset of ['badge.png', 'roboto-medium.ttf']) {
+      await fs.copyFile(
+        new URL(`../examples/lua-native/assets/${asset}`, import.meta.url),
+        path.join(dir, 'assets', asset));
+    }
+  }
+  return dir;
+}
+
+function memoryHost(fill = 65) {
+  return { core: {
+    HEAPU8: new Uint8Array(65536).fill(fill),
+    _retro_get_memory_data: (id) => id === 2 ? 1024 : 0,
+    _retro_get_memory_size: (id) => id === 2 ? 2048 : 0,
+  } };
+}
+
+for (const spec of RUNTIMES) {
+  test(`the ${spec.lang} runtime runs a script against the full ab API`, async (t) => {
+    if (!await runtimeAvailable(spec)) return t.skip(`${spec.lang} runtime not built`);
+    const rom = Buffer.from([9, 9, 9]);
+    const dir = await makeRuntimePackage(spec, spec.api, rom);
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+    const runtime = await ActiveBezelRuntime.create({
+      packagePath: dir, host: memoryHost(), romBytes: rom, platform: 'nes',
+      outputWidth: 320, outputHeight: 180,
+    });
+    const frame = runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(255), 4, 4, 1);
+    assert.deepEqual([frame.width, frame.height], [320, 180]);
+
+    const kinds = runtime.compositor.commands.map((c) => c.kind);
+    for (const kind of ['rect', 'text', 'triangle', 'texture', 'mesh']) {
+      assert.ok(kinds.includes(kind), `${spec.lang}: ${kind} must reach the compositor`);
+    }
+    const meshes = runtime.compositor.commands.filter((c) => c.kind === 'mesh');
+    assert.ok(meshes.some((m) => m.handle > 0 && m.vertices.length >= 30
+      && (m.vertices[0].rgba >>> 0) === 0xff0000ff),
+      `${spec.lang}: TTF text must emit a mesh tinted by vertex colour`);
+    assert.ok(meshes.some((m) => !m.handle && m.vertices.length === 3),
+      `${spec.lang}: an untextured per-vertex mesh must reach the compositor`);
+
+    // a failed assertion inside the script would surface as the error panel
+    runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(255), 4, 4, 2);
+    const texts = runtime.compositor.commands
+      .filter((c) => c.kind === 'text').map((c) => String(c.text));
+    assert.ok(!texts.some((s) => s.toLowerCase().includes('error')),
+      `${spec.lang}: unexpected error text: ${texts.join(' | ')}`);
   });
-  const frame = runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 1);
-  assert.ok(frame.rgba.length > 0, 'a frame still composes');
-  const texts = runtime.compositor.commands.filter((c) => c.kind === 'text').map((c) => String(c.text));
-  assert.ok(texts.some((s) => s.includes('lua bezel error')), `error panel expected, got: ${texts}`);
-});
+
+  test(`the ${spec.lang} runtime survives a broken script and says so on screen`, async (t) => {
+    if (!await runtimeAvailable(spec)) return t.skip(`${spec.lang} runtime not built`);
+    const rom = Buffer.from([9, 9, 9]);
+    const dir = await makeRuntimePackage(spec, spec.broken, rom, false);
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+    const runtime = await ActiveBezelRuntime.create({
+      packagePath: dir, host: memoryHost(0), romBytes: rom, platform: 'nes',
+      outputWidth: 320, outputHeight: 180,
+    });
+    const frame = runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 1);
+    assert.ok(frame.rgba.length > 0, 'a frame still composes');
+    const texts = runtime.compositor.commands
+      .filter((c) => c.kind === 'text').map((c) => String(c.text));
+    assert.ok(texts.some((s) => s.includes(spec.panel)),
+      `${spec.lang}: error panel expected, got: ${texts.join(' | ')}`);
+  });
+
+  test(`the ${spec.lang} runtime reports a runtime error from tick`, async (t) => {
+    if (!await runtimeAvailable(spec)) return t.skip(`${spec.lang} runtime not built`);
+    // A script that LOADS but throws mid-frame is the common authoring
+    // mistake; the message has to name the failure, not just say "error".
+    const rom = Buffer.from([9, 9, 9]);
+    const dir = await makeRuntimePackage(spec, spec.throws, rom, false);
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+    const runtime = await ActiveBezelRuntime.create({
+      packagePath: dir, host: memoryHost(0), romBytes: rom, platform: 'nes',
+      outputWidth: 320, outputHeight: 180,
+    });
+    runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 1);
+    runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 2);
+    const texts = runtime.compositor.commands
+      .filter((c) => c.kind === 'text').map((c) => String(c.text));
+    assert.ok(texts.some((s) => s.includes('boom in tick')),
+      `${spec.lang}: the panel must carry the real message, got: ${texts.join(' | ')}`);
+  });
+
+  test(`the ${spec.lang} scaffold runs as shipped`, async (t) => {
+    if (!await runtimeAvailable(spec)) return t.skip(`${spec.lang} runtime not built`);
+    // The scaffold is what romdev copies to mint a bezel. If it does not run
+    // clean -- both before and after assets exist -- the zero-toolchain path
+    // is broken for every new author.
+    let scaffold;
+    try {
+      scaffold = await fs.readFile(
+        new URL(`../runtimes/${spec.lang}/${spec.script}`, import.meta.url), 'utf8');
+    } catch {
+      return t.skip(`${spec.lang} scaffold missing`);
+    }
+    const rom = Buffer.from([9, 9, 9]);
+    const dir = await makeRuntimePackage(spec, scaffold, rom, false);
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+    const runtime = await ActiveBezelRuntime.create({
+      packagePath: dir, host: memoryHost(0x5a), romBytes: rom, platform: 'nes',
+      outputWidth: 320, outputHeight: 180,
+    });
+    runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(200), 4, 4, 1);
+    let texts = runtime.compositor.commands
+      .filter((c) => c.kind === 'text').map((c) => String(c.text));
+    assert.ok(!texts.some((s) => s.toLowerCase().includes('error')),
+      `${spec.lang} scaffold (no assets): ${texts.join(' | ')}`);
+    let kinds = runtime.compositor.commands.map((c) => c.kind);
+    for (const kind of ['game', 'rect', 'mesh']) {
+      assert.ok(kinds.includes(kind), `${spec.lang} scaffold must emit ${kind}`);
+    }
+
+    // now with the assets its guarded branches want
+    await fs.mkdir(path.join(dir, 'assets'), { recursive: true });
+    await fs.copyFile(new URL('../examples/lua-native/assets/roboto-medium.ttf', import.meta.url),
+      path.join(dir, 'assets/font.ttf'));
+    await fs.copyFile(new URL('../examples/lua-native/assets/badge.png', import.meta.url),
+      path.join(dir, 'assets/logo.png'));
+    assert.equal(await runtime.reloadAssets(), true, `${spec.lang}: reloadAssets`);
+
+    runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(200), 4, 4, 2);
+    texts = runtime.compositor.commands
+      .filter((c) => c.kind === 'text').map((c) => String(c.text));
+    assert.ok(!texts.some((s) => s.toLowerCase().includes('error')),
+      `${spec.lang} scaffold (with assets): ${texts.join(' | ')}`);
+    kinds = runtime.compositor.commands.map((c) => c.kind);
+    assert.ok(kinds.includes('texture'), `${spec.lang} scaffold must draw its image`);
+    assert.ok(runtime.compositor.commands.some((c) => c.kind === 'mesh' && c.handle > 0),
+      `${spec.lang} scaffold must draw TTF text`);
+  });
+
+  test(`the ${spec.lang} runtime hot reloads an edited script`, async (t) => {
+    if (!await runtimeAvailable(spec)) return t.skip(`${spec.lang} runtime not built`);
+    // The whole authoring loop: edit the script on disk, reload, see it.
+    // reloadAssets() must RE-OPEN the package -- firing the event alone made
+    // the guest re-read bytes the package had already cached.
+    const red = { lua: 'function tick(f) ab.fill_rect(0,0,10,10, 0xff0000ff) end',
+      python: 'def tick(frame):\n    ab.fill_rect(0,0,10,10, 0xff0000ff)\n',
+      js: 'function tick(f){ ab.fill_rect(0,0,10,10, 0xff0000ff); }',
+      ruby: 'def tick(frame)\n  AB.fill_rect(0,0,10,10, 0xff0000ff)\nend\n' }[spec.lang];
+    const green = red.replace('0xff0000ff', '0x00ff00ff');
+
+    const rom = Buffer.from([9, 9, 9]);
+    const dir = await makeRuntimePackage(spec, red, rom, false);
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+    const runtime = await ActiveBezelRuntime.create({
+      packagePath: dir, host: memoryHost(0), romBytes: rom, platform: 'nes',
+      outputWidth: 64, outputHeight: 36,
+    });
+    runtime.processFrame(new Uint8Array(4), 1, 1, 1);
+    const before = runtime.compositor.commands.find((c) => c.kind === 'rect');
+    assert.equal(before?.rgba >>> 0, 0xff0000ff, `${spec.lang}: starts red`);
+
+    await fs.writeFile(path.join(dir, spec.script), green);
+    assert.equal(await runtime.reloadAssets(), true, `${spec.lang}: reloadAssets`);
+
+    runtime.processFrame(new Uint8Array(4), 1, 1, 2);
+    const after = runtime.compositor.commands.find((c) => c.kind === 'rect');
+    assert.equal(after?.rgba >>> 0, 0x00ff00ff,
+      `${spec.lang}: must be green after reloading the edited script`);
+  });
+}
+
 
 test('runtime remains stable for 10,000 lifecycle ticks', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-soak-'));
