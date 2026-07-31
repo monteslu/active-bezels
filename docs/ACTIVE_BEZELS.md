@@ -183,15 +183,17 @@ picture effect. CPU filters follow the same ordering. The offscreen shader
 result is read back into the authoritative RGBA composition so screenshots,
 remote play, overlays and the SDL presenter all observe the same pixels.
 
-## Lua
+## Scripted bezels
 
-Set `runtime.language` to `lua54-wasmcart`, place Lua under `app/`, and reuse
-the checked-in wasmcart-lua `main.wasm`. This is genuine Lua 5.4 with the
-LÖVE-shaped wasmcart graphics API, not a subset or transpiler. Its framebuffer
-is the background composition and the host places the current game over it.
-Use the raw C ABI for a package that needs live machine-region reads or writes.
+Most bezels are scripts, not C. See [The prebuilt runtimes](#the-prebuilt-runtimes)
+below for the four languages, the shared API, and the authoring loop.
 
-See `examples/lua-starter`.
+There is also an older path: `runtime.language: lua54-wasmcart` embeds the
+wasmcart-lua engine, whose framebuffer becomes the background composition with
+the game placed over it. It predates the prebuilt runtimes and cannot read
+machine regions. New work should use `runtimes/lua/` instead, which speaks the
+ab ABI directly. See `examples/lua-starter` for the legacy shape and
+`examples/lua-native` for the current one.
 
 The reproducible CPU/GPU numbers and methodology are in
 [ACTIVE_BEZEL_BENCHMARK.md](ACTIVE_BEZEL_BENCHMARK.md).
@@ -222,18 +224,134 @@ trusted disable operation outside guest control. Hot reload is transactional.
 Normal sessions that do not attach a bezel do not instantiate this subsystem
 and retain the pre-existing fast paths.
 
-## The prebuilt Lua runtime
+## The prebuilt runtimes
 
-`runtimes/lua/main.wasm` is a complete guest embedding Lua 5.4. A Lua bezel
-ships that wasm as its `entry` plus its own `main.lua` (or `assets/main.lua`);
-iteration is edit + repack, with no compiler in the loop. The global `ab`
-table exposes the full import surface -- drawing, transforms, textures, mesh,
-shader effects, live memory regions, config, input, time -- plus batteries:
-`ab.image` (PNG/JPG/GIF/BMP via stb_image), `ab.font`/`ab.print`/`ab.measure`
-(anti-aliased TrueType via stb_truetype, one white atlas tinted through
-textured-mesh vertex colour), multi-byte region reads, `ab.loadasset`, and
-constant tables (EVENT/FIT/SAMPLE/DEVICE/BTN). The runtime
-re-reads the script on ASSETS_RELOADED and renders script errors on screen
-instead of dying, so a broken bezel is a visible, fixable state. The build
-asserts the artifact imports only `ab_host` (no env, no WASI) and exports the
-five ABI entry points. `examples/lua-native/` is a packageable starter.
+A bezel does not have to be compiled. The package ships four complete guest
+runtimes, each a wasm that embeds a scripting language and exposes the entire
+host ABI to it:
+
+| Runtime | Language | Size | Script | Entry point |
+|---|---|---|---|---|
+| `runtimes/lua/` | Lua 5.4 | 345 KB | `main.lua` | global `ab` table |
+| `runtimes/python/` | MicroPython 1.24 | 242 KB | `main.py` | global `ab` module |
+| `runtimes/js/` | QuickJS | 544 KB | `main.js` | global `ab` object |
+| `runtimes/ruby/` | mruby 3.4 | 587 KB | `main.rb` | `AB` module |
+
+Authoring a bezel is copying two files:
+
+```
+my-bezel/
+  manifest.json      entry: "main.wasm"
+  main.wasm          <- copied from runtimes/<lang>/main.wasm
+  main.py            <- copied from runtimes/<lang>/main.py, then edited
+  assets/            <- fonts, images, whatever the script reads
+```
+
+Every runtime ships a commented scaffold script beside its wasm. The scaffold
+is a working bezel: game on the left, panel on the right, and one numbered
+example of each capability (2D shapes, the live game, TrueType and bitmap
+text, a live memory readout, transforms, a decoded PNG, a per-vertex mesh, and
+a gated GLSL effect). Copy it, delete what you do not need.
+
+### The script contract
+
+Three functions, only one required. The names are the same in all four
+languages:
+
+```
+init()        optional -- once, after the script loads
+tick(frame)   REQUIRED -- once per emulated frame; draw the whole scene
+event(kind)   optional -- host lifecycle events (see the EVENT table)
+```
+
+### The API
+
+One surface, four bindings. Names and semantics match across languages; only
+syntax and the container types differ.
+
+**Drawing** `clear, draw_game, draw_game_fit, fill_rect, triangle, text,
+scissor, scissor_reset, mesh`
+**Transforms** `push_transform, pop_transform, reset_transform, translate,
+scale, rotate`
+**Textures and images** `texture_create, texture_destroy, draw_texture,
+draw_texture_rect, image, image_data`
+**Text** `font, print`/`draw_text, measure, font_metrics`
+**Effects** `effect_set, effect_clear`
+**The machine** `region, region_find_id, region_size, region_flags,
+region_offset, region_generation, region_count, read_u8, write_u8, read,
+read_u16, read_u24, read_u32, game_width, game_height, game_pixel`
+**Host** `logical_width, logical_height, physical_width, physical_height,
+elapsed_ms, delta_ms, input, log, asset, config_bool, config_number,
+config_string, rgb`
+**Constants** `EVENT, FIT, SAMPLE, DEVICE, BTN`
+
+Language-shaped differences, all of them deliberate:
+
+| | Lua | Python | JavaScript | Ruby |
+|---|---|---|---|---|
+| TTF draw | `ab.print` | `ab.draw_text` | `ab.print` | `AB.draw_text` |
+| image returns | table | dict | object | Hash |
+| mesh vertex | table | dict or tuple | object | Hash |
+| `read` returns | string | bytes | Uint8Array | String |
+| constants | `ab.BTN.START` | `ab.BTN['START']` | `ab.BTN.START` | `AB::BTN[:START]` |
+| missing region | `nil` | `None` | `null` | `nil` |
+
+Python and Ruby use `draw_text` rather than `print` because both languages
+already have a `print`: in Ruby a bare `print(...)` in a class body would
+silently reach `Kernel#print`, and in Python shadowing the builtin is worse
+than a different name. Ruby also binds `print` as an alias; Python does not.
+
+Two runtimes add one convenience each on top of the shared surface:
+`ab.loadasset(name)` in Lua compiles an asset as a Lua chunk (modules and data
+without a filesystem), and `ab.asset_text(name)` in JavaScript returns an asset
+as a string rather than a `Uint8Array`. Everything else is identical, and a
+script that sticks to the table above ports between all four languages by
+changing syntax alone.
+
+### Batteries
+
+Every runtime links the same C services from `runtimes/common/`, so a PNG
+decodes identically and text rasterises identically no matter the language:
+
+- **Images** (`stb_image`): PNG, JPG, GIF, BMP, decoded straight to a texture.
+- **TrueType** (`stb_truetype`): one WHITE glyph atlas per (font, size), drawn
+  as a textured mesh whose vertex colour carries the tint. A colour costs
+  nothing extra and a frame of text is a couple of draw calls, not hundreds.
+- **Multi-byte region reads**, little or big endian.
+- **Colour packing** into the `0xRRGGBBAA` every command wants.
+
+### Shader effects
+
+`effect_set(source)` takes a GLSL ES 3.00 fragment shader and runs it over the
+finished scene. Single-pass RetroArch shaders port almost verbatim: rename
+`Texture` to `u_texture`, `vTexCoord` to `v_uv`, `FragColor` to `out_color`,
+add the `#version 300 es` header. Gate on `v_uv` to treat only part of the
+picture -- a bezel typically wants the CRT or LCD look on the game rect while
+its own panels stay modern. Uniforms available: `u_texture` (the scene),
+`u_resolution`, `u_time` (seconds).
+
+Effects need the GPU backend. On the CPU reference compositor `effect_set`
+returns false and the scene renders unfiltered, so a bezel should treat it as
+an enhancement rather than a requirement.
+
+### Iteration
+
+The runtime re-reads its script when the host reloads assets
+(`ActiveBezelRuntime.reloadAssets()`, which re-opens the package from disk and
+then fires `ASSETS_RELOADED`). romdev loads an unpacked directory directly, so
+the loop is: edit the script, reload, look. No compile, no repack until you
+ship.
+
+Load or runtime errors never kill the session. The runtime logs the message,
+draws it on an on-screen panel with the failing line, and keeps ticking so the
+next reload can fix it.
+
+### Building a runtime from source
+
+Consumers never need to: the wasms are committed. To rebuild one, run its
+`build.sh` with emsdk on PATH. Each build fetches its engine at a pinned
+version, applies whatever patches that engine needs to live without a
+filesystem, and then asserts the artifact imports **only** `ab_host` (no
+`env`, no WASI) and exports the five ABI entry points. A build that would
+produce an unloadable guest fails at build time instead of in someone's
+emulator.

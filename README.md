@@ -48,6 +48,7 @@ It deliberately does not belong to any one emulator. Two hosts consume it today:
 | [`sdk/active_bezel.h`](sdk/active_bezel.h) | C header for guests |
 | [`sdk/abi.json`](sdk/abi.json) | machine-readable ABI |
 | [`bin/abtool.js`](bin/abtool.js) | `scaffold` / `verify` / `inspect` / `pack` |
+| [`runtimes/`](runtimes/) | prebuilt Lua / Python / JS / Ruby guests |
 | [`examples/`](examples/) | reference packages |
 
 ## Install
@@ -76,8 +77,43 @@ module as `.core` or as `.mod` — so you should not need an adapter. See
 
 ## Authoring a package
 
+**With no toolchain at all.** The package ships four prebuilt runtimes; copy one
+next to a script and you have a bezel:
+
+| Runtime | Language | Size | Script |
+|---|---|---|---|
+| `runtimes/lua/` | Lua 5.4 | 345 KB | `main.lua` |
+| `runtimes/python/` | MicroPython | 242 KB | `main.py` |
+| `runtimes/js/` | QuickJS | 544 KB | `main.js` |
+| `runtimes/ruby/` | mruby | 587 KB | `main.rb` |
+
 ```sh
-npx abtool scaffold my-bezel c     # or: lua
+mkdir -p my-bezel/assets
+cp node_modules/active-bezel/runtimes/python/main.wasm my-bezel/
+cp node_modules/active-bezel/runtimes/python/main.py   my-bezel/   # the scaffold
+$EDITOR my-bezel/main.py
+```
+
+Each runtime's scaffold is a working bezel with a commented example of every
+capability: 2D shapes, the live game, TrueType and bitmap text, live memory
+reads, transforms, a decoded PNG, a per-vertex mesh, and a GLSL effect. All four
+speak the same API, so a bezel ports between languages by changing syntax.
+
+```python
+def tick(frame):
+    ab.clear(ab.rgb(14, 16, 26))
+    ab.draw_game(0, 0, 1440, 1080, ab.SAMPLE['NEAREST'])
+    ram = ab.region('system_ram')
+    ab.draw_text(font, 'HP %d' % ab.read_u8(ram, 0x0E), 1500, 80, 40, ab.rgb(255, 255, 255))
+```
+
+Iteration is edit, reload, look -- `romdev` loads an unpacked directory
+directly, so nothing needs packing until you ship. Errors draw an on-screen
+panel with the failing line instead of killing the session.
+
+Then package it:
+
+```sh
 npx abtool verify my-bezel
 npx abtool pack my-bezel my-bezel.ab
 npx abtool inspect my-bezel.ab
@@ -86,9 +122,9 @@ npx abtool inspect my-bezel.ab
 `pack` emits a deterministic stored ZIP. `.ab` is deliberately ordinary — rename
 it to `.zip` and look inside.
 
-Guests can be written in any language that emits suitable WebAssembly:
-freestanding C, Rust, Zig, AssemblyScript. A Lua option bundles the wasmcart Lua
-runtime and needs no compiler at all.
+**With a compiler.** A guest can be any language that emits suitable
+WebAssembly: freestanding C (see [`sdk/active_bezel.h`](sdk/active_bezel.h)),
+Rust, Zig. `npx abtool scaffold my-bezel c` starts one.
 
 ## Dependencies
 
@@ -101,7 +137,8 @@ runtime falls back to the CPU compositor, which is fully featured; the GL path
 is a performance option, not a capability one.
 
 `wasmcart` is genuinely optional and loads on demand: only a guest declaring
-`runtime.language: "lua54-wasmcart"` needs it. A wasm guest never touches it.
+the legacy `runtime.language: "lua54-wasmcart"` needs it. The four prebuilt
+runtimes are plain wasm guests and never touch it.
 
 ## A caution worth repeating
 
