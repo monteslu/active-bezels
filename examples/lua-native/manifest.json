@@ -1,0 +1,21 @@
+{
+  "format": "active-bezel",
+  "formatVersion": 1,
+  "id": "org.activebezel.lua-native",
+  "name": "Lua Native Starter",
+  "version": "0.1.0",
+  "author": "active-bezel",
+  "description": "A Lua bezel on the prebuilt runtime: full ab API, no compiler. Edit assets/main.lua and repack.",
+  "license": "MIT",
+  "entry": "main.wasm",
+  "runtime": {
+    "abi": "active-bezel-1",
+    "renderer": "gpu-command-v1",
+    "internalResolution": [
+      1920,
+      1080
+    ],
+    "extensions": []
+  },
+  "games": []
+}

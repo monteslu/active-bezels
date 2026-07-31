@@ -221,3 +221,15 @@ only the bezel and immediately returns ordinary game video. Romdeck retains a
 trusted disable operation outside guest control. Hot reload is transactional.
 Normal sessions that do not attach a bezel do not instantiate this subsystem
 and retain the pre-existing fast paths.
+
+## The prebuilt Lua runtime
+
+`runtimes/lua/main.wasm` is a complete guest embedding Lua 5.4. A Lua bezel
+ships that wasm as its `entry` plus its own `main.lua` (or `assets/main.lua`);
+iteration is edit + repack, with no compiler in the loop. The global `ab`
+table exposes the full import surface -- drawing, transforms, textures, mesh,
+shader effects, live memory regions, config, input, time. The runtime
+re-reads the script on ASSETS_RELOADED and renders script errors on screen
+instead of dying, so a broken bezel is a visible, fixable state. The build
+asserts the artifact imports only `ab_host` (no env, no WASI) and exports the
+five ABI entry points. `examples/lua-native/` is a packageable starter.

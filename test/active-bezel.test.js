@@ -536,6 +536,85 @@ test('checked-in C and Lua reference packages validate and compile', async () =>
   }
 });
 
+test('the prebuilt Lua runtime runs a script against the full ab API', async (t) => {
+  // The runtime wasm is the packaged entry; the bezel is assets/main.lua.
+  // This is the no-compiler iteration path, so what matters is that a script
+  // reaches the same command stream a C guest would.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-lua-native-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const rom = Buffer.from([9, 9, 9]);
+  const runtimeWasm = await fs.readFile(new URL('../runtimes/lua/main.wasm', import.meta.url));
+  await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifestFor(rom)));
+  await fs.writeFile(path.join(dir, 'main.wasm'), runtimeWasm);
+  await fs.writeFile(path.join(dir, 'main.lua'), `
+    local booted = false
+    function init() booted = true end
+    function tick(frame)
+      ab.clear(ab.rgb(1, 2, 3))
+      ab.fill_rect(10, 20, 100, 50, 0xff0000ff)
+      ab.text('lua ' .. frame, 40, 40, 30, 0xffffffff)
+      ab.push_transform(); ab.translate(5, 5)
+      ab.triangle(0, 0, 50, 0, 0, 50, 0x00ff00ff)
+      ab.pop_transform()
+      local ram = ab.region('system_ram')
+      assert(ram ~= nil, 'system_ram must resolve')
+      assert(ab.read_u8(ram, 0) == 65, 'expected the host heap byte')
+      assert(#ab.read(ram, 0, 4) == 4, 'bulk read length')
+      assert(booted, 'init() must have run first')
+    end
+  `);
+
+  const heap = new Uint8Array(65536).fill(65);
+  const host = {
+    core: {
+      HEAPU8: heap,
+      _retro_get_memory_data: (id) => id === 2 ? 1024 : 0,
+      _retro_get_memory_size: (id) => id === 2 ? 2048 : 0,
+    },
+  };
+  const runtime = await ActiveBezelRuntime.create({
+    packagePath: dir, host, romBytes: rom, platform: 'nes',
+    outputWidth: 320, outputHeight: 180,
+  });
+  const frame = runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(255), 4, 4, 1);
+  assert.deepEqual([frame.width, frame.height], [320, 180]);
+  const kinds = runtime.compositor.commands.map((c) => c.kind);
+  assert.ok(kinds.includes('rect'), 'fill_rect must reach the compositor');
+  assert.ok(kinds.includes('text'), 'text must reach the compositor');
+  assert.ok(kinds.includes('triangle'), 'triangle must reach the compositor');
+  // A Lua assert() failing inside tick() must NOT be silent: the runtime
+  // catches it and draws an error panel instead. Prove the happy path stayed
+  // happy by ticking again and checking the error text never appeared.
+  runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(255), 4, 4, 2);
+  const texts = runtime.compositor.commands.filter((c) => c.kind === 'text').map((c) => c.text);
+  assert.ok(!texts.some((s) => String(s).includes('error')), `unexpected error text: ${texts}`);
+});
+
+test('the Lua runtime survives a broken script and says so on screen', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-lua-broken-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const rom = Buffer.from([9, 9, 9]);
+  const runtimeWasm = await fs.readFile(new URL('../runtimes/lua/main.wasm', import.meta.url));
+  await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifestFor(rom)));
+  await fs.writeFile(path.join(dir, 'main.wasm'), runtimeWasm);
+  await fs.writeFile(path.join(dir, 'main.lua'), 'this is not lua at all (');
+  const host = {
+    core: {
+      HEAPU8: new Uint8Array(65536),
+      _retro_get_memory_data: (id) => id === 2 ? 1024 : 0,
+      _retro_get_memory_size: (id) => id === 2 ? 2048 : 0,
+    },
+  };
+  const runtime = await ActiveBezelRuntime.create({
+    packagePath: dir, host, romBytes: rom, platform: 'nes',
+    outputWidth: 320, outputHeight: 180,
+  });
+  const frame = runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 1);
+  assert.ok(frame.rgba.length > 0, 'a frame still composes');
+  const texts = runtime.compositor.commands.filter((c) => c.kind === 'text').map((c) => String(c.text));
+  assert.ok(texts.some((s) => s.includes('lua bezel error')), `error panel expected, got: ${texts}`);
+});
+
 test('runtime remains stable for 10,000 lifecycle ticks', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'active-bezel-soak-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

@@ -1,6 +1,6 @@
 {
   "name": "active-bezel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Active Bezels: executable companions to a specific ROM. A .ab package runs once per emulated frame, reads the emulator's live memory regions, and renders the complete final scene \u2014 maps, HUDs, reconstructed world graphics, artwork \u2014 around or over the original game picture. This is the format spec, the reference runtime, and the packaging tool.",
   "type": "module",
   "main": "index.js",
@@ -25,6 +25,7 @@
     "src/",
     "sdk/",
     "bin/",
+    "runtimes/",
     "docs/",
     "examples/",
     "README.md",
