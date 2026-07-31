@@ -293,6 +293,32 @@ static int l_asset(lua_State *S) {
   return 1;
 }
 
+static int l_config_bool(lua_State *S) {
+  size_t n = 0;
+  const char *key = luaL_checklstring(S, 1, &n);
+  lua_pushboolean(S, ab_config_bool_raw(key, (int32_t)n) != 0);
+  return 1;
+}
+
+static int l_config_number(lua_State *S) {
+  size_t n = 0;
+  const char *key = luaL_checklstring(S, 1, &n);
+  lua_pushnumber(S, ab_config_number_raw(key, (int32_t)n));
+  return 1;
+}
+
+static int l_config_string(lua_State *S) {
+  size_t n = 0;
+  const char *key = luaL_checklstring(S, 1, &n);
+  int32_t len = ab_config_string_length_raw(key, (int32_t)n);
+  if (len < 0) { lua_pushnil(S); return 1; }
+  luaL_Buffer b;
+  char *dst = luaL_buffinitsize(S, &b, (size_t)len);
+  int32_t got = ab_config_string_read_raw(key, (int32_t)n, dst, len);
+  luaL_pushresultsize(&b, (size_t)(got < 0 ? 0 : got));
+  return 1;
+}
+
 /* rgb(r, g, b[, a]) -> packed 0xRRGGBBAA, the format every command takes */
 static int l_rgb(lua_State *S) {
   uint32_t r = (uint32_t)luaL_checkinteger(S, 1) & 0xff;
@@ -347,6 +373,9 @@ static const luaL_Reg AB_FUNCS[] = {
   { "write_u8", l_write_u8 },
   { "read", l_read },
   { "asset", l_asset },
+  { "config_bool", l_config_bool },
+  { "config_number", l_config_number },
+  { "config_string", l_config_string },
   { "rgb", l_rgb },
   { NULL, NULL },
 };

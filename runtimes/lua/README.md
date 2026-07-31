@@ -22,7 +22,8 @@ texture_create, texture_destroy, draw_texture, draw_texture_rect, effect_set,
 effect_clear, game_width, game_height, game_pixel, logical_width,
 logical_height, physical_width, physical_height, elapsed_ms, delta_ms, input,
 log, region, region_find_id, region_size, region_flags, region_offset,
-region_generation, region_count, read_u8, write_u8, read, asset, rgb`.
+region_generation, region_count, read_u8, write_u8, read, asset,
+config_bool, config_number, config_string, rgb`.
 
 Colors are packed `0xRRGGBBAA`; `ab.rgb(r, g, b[, a])` builds one.
 
