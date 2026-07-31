@@ -38,10 +38,17 @@
 
 /* ---------------------------------------------------------------- state -- */
 
-/* The GC heap. 512KB is generous for a dashboard and still leaves the wasm
- * comfortably under budget; ALLOW_MEMORY_GROWTH covers a script that wants
- * more headroom for its own tables. */
-#define GC_HEAP_BYTES (512 * 1024)
+/* The GC heap.
+ *
+ * 2MB, not 512KB: a bezel's assets land in it too. The first scaffold run
+ * with a real font died on "MemoryError: allocating 511593 bytes" -- that is
+ * ab.asset() returning a 500KB TTF as a bytes object, which alone did not
+ * fit beside the script's own objects. Fonts, PNGs and ROM slices are all
+ * routine here, so size the heap for data rather than for code.
+ *
+ * This is a static array so it costs nothing until touched (wasm zero-pages
+ * on demand), and ALLOW_MEMORY_GROWTH still covers the rest. */
+#define GC_HEAP_BYTES (2 * 1024 * 1024)
 static char g_heap[GC_HEAP_BYTES];
 
 static char g_error[512];
