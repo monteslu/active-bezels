@@ -242,6 +242,19 @@ AB_FN(js_surface_filter) {
   return JS_NewInt32(ctx, result);
 }
 
+AB_FN(js_surface_preset) {
+  size_t len = 0;
+  const char *preset;
+  int32_t result;
+  AB_UNUSED();
+  preset = JS_ToCStringLen(ctx, &len, argv[2]);
+  if (!preset) return JS_EXCEPTION;
+  result = ab_surface_preset_raw((int32_t)arg_num(ctx, argv[0], 0),
+                                 (int32_t)arg_num(ctx, argv[1], 0), preset, (int32_t)len);
+  JS_FreeCString(ctx, preset);
+  return JS_NewInt32(ctx, result);
+}
+
 AB_FN(js_quad) {
   ab_point pts[4];
   int64_t i;
@@ -730,6 +743,7 @@ static const JSCFunctionListEntry AB_FUNCS[] = {
   JS_CFUNC_DEF("surface_target", 1, js_surface_target),
   JS_CFUNC_DEF("surface_end", 0, js_surface_end),
   JS_CFUNC_DEF("surface_filter", 3, js_surface_filter),
+  JS_CFUNC_DEF("surface_preset", 3, js_surface_preset),
   JS_CFUNC_DEF("mesh", 2, js_mesh),
   JS_CFUNC_DEF("texture_create", 3, js_texture_create),
   JS_CFUNC_DEF("texture_destroy", 1, js_texture_destroy),

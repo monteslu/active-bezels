@@ -245,6 +245,16 @@ static mrb_value ab_m_surface_filter(mrb_state *m, mrb_value self) {
                                                 shader, (int32_t)len));
 }
 
+static mrb_value ab_m_surface_preset(mrb_state *m, mrb_value self) {
+  mrb_int src, dst;
+  const char *preset;
+  mrb_int len;
+  mrb_get_args(m, "iis", &src, &dst, &preset, &len);
+  (void)self;
+  return mrb_int_value(m, ab_surface_preset_raw((int32_t)src, (int32_t)dst,
+                                                preset, (int32_t)len));
+}
+
 static mrb_value ab_m_quad(mrb_state *m, mrb_value self) {
   mrb_value corners;
   mrb_int texture = 0;
@@ -653,6 +663,7 @@ static const ab_binding AB_FUNCS[] = {
   { "surface_target", ab_m_surface_target, MRB_ARGS_REQ(1) },
   { "surface_end", ab_m_surface_end, MRB_ARGS_NONE() },
   { "surface_filter", ab_m_surface_filter, MRB_ARGS_REQ(3) },
+  { "surface_preset", ab_m_surface_preset, MRB_ARGS_REQ(3) },
   { "mesh", ab_m_mesh, MRB_ARGS_ARG(1, 1) },
   { "texture_create", ab_m_texture_create, MRB_ARGS_REQ(3) },
   { "texture_destroy", ab_m_texture_destroy, MRB_ARGS_REQ(1) },

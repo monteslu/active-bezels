@@ -139,6 +139,7 @@ static int l_transform2d(lua_State *S) {
  * surface_create(w, h) -> handle
  * surface_target(handle) / surface_end()  -- draw into it
  * surface_filter(source, destination, glsl) -- run a shader between them
+ * surface_preset(source, destination, "x.glslp") -- run a MULTI-PASS preset
  * The handle works anywhere a texture does. ab.GAME as a source means the
  * live frame. */
 static int l_surface_create(lua_State *S) {
@@ -156,6 +157,14 @@ static int l_surface_filter(lua_State *S) {
   const char *shader = luaL_checklstring(S, 3, &n);
   lua_pushinteger(S, ab_surface_filter_raw((int32_t)luaL_checkinteger(S, 1),
     (int32_t)luaL_checkinteger(S, 2), shader, (int32_t)n));
+  return 1;
+}
+
+static int l_surface_preset(lua_State *S) {
+  size_t n = 0;
+  const char *preset = luaL_checklstring(S, 3, &n);
+  lua_pushinteger(S, ab_surface_preset_raw((int32_t)luaL_checkinteger(S, 1),
+    (int32_t)luaL_checkinteger(S, 2), preset, (int32_t)n));
   return 1;
 }
 
@@ -498,6 +507,7 @@ static const luaL_Reg AB_FUNCS[] = {
   { "surface_target", l_surface_target },
   { "surface_end", l_surface_end },
   { "surface_filter", l_surface_filter },
+  { "surface_preset", l_surface_preset },
   { "mesh", l_mesh },
   { "texture_create", l_texture_create },
   { "texture_destroy", l_texture_destroy },

@@ -140,6 +140,30 @@ is a performance option, not a capability one.
 the legacy `runtime.language: "lua54-wasmcart"` needs it. The four prebuilt
 runtimes are plain wasm guests and never touch it.
 
+## Shader presets
+
+Bezels can run RetroArch `.glslp` shader presets -- the multi-pass CRT chains,
+not just single shaders -- into an offscreen surface, then map the result
+anywhere in the scene.
+
+**No shaders ship with this package.** Point it at
+[libretro/glsl-shaders](https://github.com/libretro/glsl-shaders), or at the
+copy an existing RetroArch install already has
+(`~/.config/retroarch/shaders/shaders_glsl/`).
+
+**491 of the 609 shipped presets run (81%)**, including 309 of the 377
+multi-pass ones -- 150/150 handheld, 61/75 crt. The rest use desktop-OpenGL
+constructs that GLES 3 rejects; presets are used exactly as published and their
+source is never edited, so those stay unsupported. `crt-royale` is one of them.
+
+Licensing is why nothing is bundled: the upstream repository has no
+repository-level licence and the per-file terms are a mix of GPL, MIT, public
+domain, and no grant at all. Loading from a copy the user already has keeps
+that between the user and the shader author.
+
+Full detail, including the per-category table and what specifically fails, is in
+[docs/ACTIVE_BEZELS.md](docs/ACTIVE_BEZELS.md#shader-presets-glslp).
+
 ## A caution worth repeating
 
 A `.ab` can load cleanly, tick without trapping, and emit perfectly valid draw
@@ -164,3 +188,7 @@ MIT — see [LICENSE](LICENSE).
 
 The bundled example packages (`diagnostic`, `lua-starter`) are generic: they
 contain no game content and target no specific ROM.
+
+No third-party shaders are redistributed here. `src/imgdec.wasm` is built from
+the `stb_image.h` vendored in `runtimes/common` (public domain / MIT dual
+licence); see [tools/imgdec/SOURCES.md](tools/imgdec/SOURCES.md).

@@ -268,6 +268,13 @@ static mp_obj_t ab_surface_filter_fn(mp_obj_t src, mp_obj_t dst, mp_obj_t shader
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(ab_surface_filter_obj, ab_surface_filter_fn);
 
+static mp_obj_t ab_surface_preset_fn(mp_obj_t src, mp_obj_t dst, mp_obj_t preset) {
+  size_t n = 0;
+  const char *s = arg_str(preset, &n);
+  return mp_obj_new_int(ab_surface_preset_raw(arg_i(src), arg_i(dst), s, (int32_t)n));
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(ab_surface_preset_obj, ab_surface_preset_fn);
+
 static mp_obj_t ab_quad_fn(size_t n, const mp_obj_t *a) {
   size_t count = 0;
   mp_obj_t *items = NULL;
@@ -643,6 +650,7 @@ static mp_obj_t build_ab_module(void) {
   ADD("surface_target", ab_surface_target_obj);
   ADD("surface_end", ab_surface_end_obj);
   ADD("surface_filter", ab_surface_filter_obj);
+  ADD("surface_preset", ab_surface_preset_obj);
   ADD("mesh", ab_mesh_obj);
   ADD("texture_create", ab_texture_create_obj);
   ADD("texture_destroy", ab_texture_destroy_obj);

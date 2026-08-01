@@ -183,6 +183,109 @@ picture effect. CPU filters follow the same ordering. The offscreen shader
 result is read back into the authoritative RGBA composition so screenshots,
 remote play, overlays and the SDL presenter all observe the same pixels.
 
+## Shader presets (`.glslp`)
+
+`surface_filter` takes a single fragment shader. `surface_preset` takes a
+RetroArch **`.glslp` preset**: a chain of passes, each rendering into its own
+buffer at its own resolution, with later passes able to sample several earlier
+ones. That is what the serious CRT shaders are, and it cannot be flattened into
+one shader at any size.
+
+```lua
+local tube = ab.surface_create(w, h)
+ab.surface_preset(ab.GAME, tube, 'shaders/crt-lottes.glslp')
+```
+
+The destination surface acts as the preset's **viewport**, so a `viewport`-scaled
+pass fills the thing being rendered into rather than the display behind it. The
+same preset therefore serves a full-screen picture or a small on-screen tube.
+
+### Where to get presets
+
+**This package ships no shaders.** Point it at a copy of libretro's GLSL shader
+library:
+
+- <https://github.com/libretro/glsl-shaders> — the upstream repository
+- an existing RetroArch install already has them, typically at
+  `~/.config/retroarch/shaders/shaders_glsl/`, or under
+  `/usr/share/libretro/shaders/shaders_glsl/`
+- distro packages: `libretro-shaders-glsl` on Debian/Ubuntu
+
+Copy the presets you want into your package. A preset's `shaderN` paths resolve
+relative to the preset file, so keep the directory structure it came with -- a
+preset that says `../blurs/blur9fast-vertical.glsl` needs that sibling
+directory present.
+
+Lookup textures (`textures = "..."`) are decoded by the host; PNG, JPEG, BMP and
+TGA all work.
+
+### Which presets work
+
+The renderer targets **GLES 3 / WebGL2**, because that is what runs unchanged in
+a browser and on a handheld. Presets are used as published; their source is
+never edited.
+
+Measured against the 609 `.glslp` presets shipped by libretro at the time of
+writing:
+
+| | count |
+| --- | ---: |
+| **Run** | **491** (81%) |
+| Will not compile on GLES 3 | 116 |
+| `#reference` presets (unsupported form) | 1 |
+| Reference a `.glsl` absent from the distribution | 1 |
+| **Total** | **609** |
+
+Of the 377 multi-pass presets, 309 run.
+
+By category, where the count is meaningful:
+
+| category | total | run |
+| --- | ---: | ---: |
+| handheld | 150 | 150 |
+| crt | 75 | 61 |
+| presets | 82 | 52 |
+| borders | 35 | 25 |
+| misc | 25 | 21 |
+| ntsc | 20 | 15 |
+| xbr | 19 | 15 |
+| interpolation | 19 | 15 |
+| procedural | 12 | 12 |
+| cel | 15 | 2 |
+
+**What fails, and why it is not fixable here.** The 116 use desktop-OpenGL
+constructs that GLES 3 rejects: `##` token pasting (24), `fwidth` and other
+derivative builtins needing an extension pragma (18), implicit int/float
+conversion (9), and non-constant global initializers. Each would need a change
+to the shader's own source. This package translates the `#version` header and
+the `texture2D`/`attribute`/`varying` spellings -- what any GLES loader does --
+and stops there. Patching upstream shaders would mean maintaining a private
+fork of the shader library, which is a worse problem than an unsupported preset.
+
+`crt-royale` is in the failing group. It declares globals initialised from other
+globals, which desktop GL accepts and GLES 3 does not. RetroArch runs it on
+GLES via the **slang** pipeline (Vulkan GLSL compiled through SPIRV-Cross), not
+through these GLSL files; that pipeline is out of scope here.
+
+If a preset fails, `surface_preset` returns 0 and the compositor records the
+compiler's message -- it never renders a partial chain, because a half-applied
+CRT preset looks like it worked.
+
+### Licensing
+
+Shaders are **not** redistributed with this package, deliberately. The libretro
+GLSL repository has no repository-level licence and the terms are per file: of
+the 491 that run, 194 are GPL-2.0/3.0, 226 carry no licence grant at all (189
+with no header, 37 with a bare copyright line), and only 71 are MIT or public
+domain. Bundling that mix inside an MIT package is not something this project
+can do cleanly, so it does not try.
+
+Loading a preset at runtime from a copy the user already has keeps the licensing
+question where it belongs -- between the user and the shader author -- and has
+the side benefit that users get the whole library and its updates rather than a
+frozen subset. If you redistribute a package containing presets you copied in,
+their licences travel with them and are yours to honour.
+
 ## Scripted bezels
 
 Most bezels are scripts, not C. See [The prebuilt runtimes](#the-prebuilt-runtimes)
