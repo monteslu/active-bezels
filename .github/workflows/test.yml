@@ -72,8 +72,8 @@ jobs:
 
       - name: abtool runs
         run: |
-          node bin/abtool.js verify examples/diagnostic
-          node bin/abtool.js pack examples/diagnostic /tmp/diagnostic.ab
+          node bin/abtool.js verify runtimes/c/start
+          node bin/abtool.js pack runtimes/c/start /tmp/scaffold.ab
           node bin/abtool.js inspect /tmp/diagnostic.ab
 
   # A published tarball is not the same thing as a green checkout: `files` can

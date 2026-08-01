@@ -551,12 +551,16 @@ test('machine-readable ABI schema covers the runtime contract', async () => {
   ]) assert.ok(abi.hostImports[name], `ABI import ${name}`);
 });
 
-test('checked-in C and Lua reference packages validate and compile', async () => {
+test('every scaffold abtool ships is a valid, compilable package', async () => {
+  /* These are what `abtool scaffold` hands a new author, so a broken one is
+   * the worst possible first impression. Checked as PACKAGES -- manifest
+   * parses, declared entry exists, and the wasm actually compiles. */
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const examples = path.resolve(here, '../examples');
-  for (const name of ['diagnostic', 'lua-starter']) {
-    const pkg = await ActiveBezelPackage.open(path.join(examples, name));
-    assert.ok(await WebAssembly.compile(pkg.read(pkg.manifest.entry)));
+  for (const lang of ['lua', 'js', 'python', 'ruby', 'c']) {
+    const dir = path.resolve(here, `../runtimes/${lang}/start`);
+    const pkg = await ActiveBezelPackage.open(dir);
+    assert.ok(await WebAssembly.compile(pkg.read(pkg.manifest.entry)),
+      `${lang} scaffold entry must be valid wasm`);
   }
 });
 
@@ -1020,8 +1024,10 @@ async function makeRuntimePackage(spec, script, rom, withAssets = true) {
   return dir;
 }
 
+/* No TrueType font is redistributed from this repo, so the TTF-specific
+ * assertions are skipped unless one is dropped in by hand. */
 const hasExampleFont = existsSync(
-  new URL('../examples/lua-native/assets/roboto-medium.ttf', import.meta.url));
+  new URL('./fixtures/font.ttf', import.meta.url));
 
 /*
  * A real 48x48 PNG, committed under test/fixtures because the example asset
@@ -1163,18 +1169,11 @@ for (const spec of RUNTIMES) {
     /* Same story as makeRuntimePackage: the example assets are gitignored, so
      * a clean checkout has neither. The image is synthesised; the font is not,
      * and every scaffold guards ab.font behind ab.asset() for exactly that. */
-    let haveFont = true;
-    try {
-      await fs.copyFile(new URL('../examples/lua-native/assets/roboto-medium.ttf', import.meta.url),
+    if (hasExampleFont) {
+      await fs.copyFile(new URL('./fixtures/font.ttf', import.meta.url),
         path.join(dir, 'assets/font.ttf'));
-    } catch { haveFont = false; }
-    try {
-      await fs.copyFile(new URL('../examples/lua-native/assets/badge.png', import.meta.url),
-        path.join(dir, 'assets/logo.png'));
-    } catch {
-      await fs.copyFile(BADGE_PNG, path.join(dir, 'assets/logo.png'));
     }
-    void haveFont;
+    await fs.copyFile(BADGE_PNG, path.join(dir, 'assets/logo.png'));
     assert.equal(await runtime.reloadAssets(), true, `${spec.lang}: reloadAssets`);
 
     runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(200), 4, 4, 2);

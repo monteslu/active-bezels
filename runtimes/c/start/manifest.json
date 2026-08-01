@@ -1,24 +1,24 @@
 {
   "format": "active-bezel",
   "formatVersion": 1,
-  "id": "org.romdeck.diagnostic",
-  "name": "Active Bezel Diagnostic",
+  "id": "local.my-bezel",
+  "name": "My Bezel",
   "version": "0.1.0",
   "author": "romdeck",
-  "description": "A portable pass-through bezel used to verify matching, settings, composition and live memory.",
+  "description": "A starting point. Edit main.c, then run ./build.sh.",
   "license": "MIT",
   "entry": "main.wasm",
   "runtime": {
     "abi": "active-bezel-1",
     "renderer": "cpu-rgba-v1",
-    "internalResolution": [640, 360],
+    "internalResolution": [
+      640,
+      360
+    ],
     "extensions": []
   },
   "games": [],
   "compatible": [],
-  "requires": [
-    { "region": "system_ram", "minSize": 1 }
-  ],
   "settings": [
     {
       "key": "game_left",

@@ -149,5 +149,3 @@ The build asserts the artifact imports **only `ab_host`** (no `env`, no WASI)
 and exports the five ABI entry points. Lua's file loading and its wall-clock
 RNG seed are compiled out — there is no filesystem and no wall clock in a
 bezel, and either would drag WASI imports into the wasm.
-
-`examples/lua-native/` is a packageable starter built on a copy of this runtime.

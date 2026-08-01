@@ -27,7 +27,7 @@
  * Usage: node scripts/check-runtimes.mjs [--json]
  * Exits 1 if any runtime fails any check.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -262,9 +262,19 @@ const kb = (n) => `${(n / 1024).toFixed(0)}KB`;
 function main() {
   const json = process.argv.includes('--json');
 
+  /*
+   * A prebuilt RUNTIME is a directory with its own main.wasm -- an embedded
+   * interpreter this package ships and must hold to the import/export/size
+   * contract. `common/` is shared C, and `c/` is a scaffold for authors who
+   * bring their own compiler: neither ships an engine, so neither is checked
+   * here. Keying on the artifact rather than a name blocklist means adding a
+   * fifth language needs no edit, and adding another non-runtime directory
+   * cannot silently fail the build.
+   */
   const names = readdirSync(RUNTIMES_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory() && d.name !== 'common')
     .map((d) => d.name)
+    .filter((name) => existsSync(path.join(RUNTIMES_DIR, name, 'main.wasm')))
     .sort();
 
   const results = [];

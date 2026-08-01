@@ -64,9 +64,23 @@ async function pack(source, destination) {
   return ActiveBezelPackage.open(destination);
 }
 
-async function scaffold(destination, language = 'c') {
+/*
+ * Scaffold a new bezel.
+ *
+ * Every target copies `runtimes/<lang>/start/`: a runtime (or a prebuilt
+ * wasm), a commented source file that is already a working bezel, and a ready
+ * manifest. The four scripting targets need no toolchain at all -- edit the
+ * script, reload, done. `c` additionally ships its header and a build.sh.
+ */
+const SCAFFOLD_LANGUAGES = ['lua', 'js', 'python', 'ruby', 'c'];
+
+async function scaffold(destination, language = 'lua') {
+  if (!SCAFFOLD_LANGUAGES.includes(language)) {
+    throw new Error(
+      `unknown language '${language}'. Try one of: ${SCAFFOLD_LANGUAGES.join(', ')}`);
+  }
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const source = path.resolve(here, `../examples/${language === 'lua' ? 'lua-starter' : 'diagnostic'}`);
+  const source = path.resolve(here, `../runtimes/${language}/start`);
   const target = path.resolve(destination);
   try {
     await fs.stat(target);
@@ -76,9 +90,19 @@ async function scaffold(destination, language = 'c') {
   }
   await fs.cp(source, target, { recursive: true, errorOnExist: true });
   if (language === 'c') {
-    const sdk = path.resolve(here, '../sdk');
-    await fs.copyFile(path.join(sdk, 'active_bezel.h'), path.join(target, 'active_bezel.h'));
-    await fs.copyFile(path.join(sdk, 'abi.json'), path.join(target, 'abi.json'));
+    /* the machine-readable ABI, beside the header, for anyone generating
+     * bindings or checking a signature */
+    await fs.copyFile(path.resolve(here, '../sdk/abi.json'), path.join(target, 'abi.json'));
+  }
+  {
+    /* Name the package after the directory, so two scaffolds are not both
+     * "My Bezel" with the same id. */
+    const manifestPath = path.join(target, 'manifest.json');
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    const slug = path.basename(target).replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
+    manifest.id = `local.${slug}`;
+    manifest.name = path.basename(target);
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   }
   return target;
 }
@@ -90,7 +114,7 @@ Usage:
   abtool inspect <package.ab|directory>
   abtool pack <source-directory> <package.ab>
   abtool verify <package.ab|directory>
-  abtool scaffold <destination> [c|lua]
+  abtool scaffold <destination> [lua|js|python|ruby|c]   (default: lua)
 
 The packer writes a deterministic, uncompressed ZIP. WASM and PNG assets are
 already compact, and stored entries make packages fast and universally
@@ -137,8 +161,7 @@ try {
       exports,
     }, null, 2));
   } else if (command === 'scaffold' && args[0]) {
-    const language = args[1] ?? 'c';
-    if (!['c', 'lua'].includes(language)) throw new Error('language must be c or lua');
+    const language = args[1] ?? 'lua';
     console.log(await scaffold(args[0], language));
   } else {
     usage();

@@ -295,9 +295,7 @@ There is also an older path: `runtime.language: lua54-wasmcart` embeds the
 wasmcart-lua engine, whose framebuffer becomes the background composition with
 the game placed over it. It predates the prebuilt runtimes and cannot read
 machine regions. New work should use `runtimes/lua/` instead, which speaks the
-ab ABI directly. See [`examples/lua-starter`](../examples/lua-starter) for the
-legacy shape and [`examples/lua-native`](../examples/lua-native) for the
-current one.
+ab ABI directly. `npx abtool scaffold my-bezel lua` starts one.
 
 ## Reference packages
 

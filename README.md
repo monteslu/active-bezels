@@ -57,7 +57,6 @@ It deliberately does not belong to any one emulator. Two hosts consume it today:
 | [`sdk/abi.json`](sdk/abi.json) | machine-readable ABI |
 | [`bin/abtool.js`](bin/abtool.js) | `scaffold` / `verify` / `inspect` / `pack` |
 | [`runtimes/`](runtimes/) | prebuilt Lua / Python / JS / Ruby guests |
-| [`examples/`](examples/) | reference packages |
 
 ## Install
 
