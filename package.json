@@ -33,7 +33,8 @@
     "examples/",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "!docs/media/"
   ],
   "scripts": {
     "check:runtimes": "node scripts/check-runtimes.mjs",
