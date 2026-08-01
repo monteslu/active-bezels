@@ -52,7 +52,23 @@ jobs:
       # through EGL's surfaceless platform, needing neither a display nor a
       # DRM device. See the EGL_PLATFORM/GALLIUM_DRIVER env above.
       - name: Software OpenGL (llvmpipe)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1-mesa-dri libgbm1
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # libgl1-mesa-dri carries swrast_dri.so, the actual software driver.
+          # libegl1 alone gets you an EGL loader with nothing behind it, which
+          # fails silently: eglInitialize succeeds, no config is found, and the
+          # tests skip as though the machine had no GL at all.
+          sudo apt-get install -y libegl1 libegl-mesa0 libgl1-mesa-dri libgbm1 mesa-utils
+          # Prove the driver is actually present and a context is reachable,
+          # rather than discovering it from 18 skipped tests later.
+          ls -1 /usr/lib/x86_64-linux-gnu/dri/ | grep -E 'swrast|llvmpipe' \
+            || { echo "::error::no software DRI driver installed"; exit 1; }
+          node -e "
+            const gl = require('native-gles');
+            if (!gl.createContext(64, 64)) { console.error('no GLES context'); process.exit(1); }
+            console.log('GLES:', gl.glGetString(0x1F02));
+          " || { echo "::error::software GL context unavailable"; exit 1; }
 
       - uses: actions/setup-node@v7
         with:
@@ -78,6 +94,15 @@ jobs:
 
       - name: Install
         run: npm ci || npm install
+
+      # Fail loudly here rather than discovering it from 18 skipped tests.
+      - name: Software GL is actually usable
+        run: |
+          node -e "
+            const gl = require('native-gles');
+            if (!gl.createContext(64, 64)) { console.error('no GLES context'); process.exit(1); }
+            console.log('GL_VERSION:', gl.glGetString(0x1F02));
+          "
 
       # Runs check-runtimes via the pretest hook, then the suite.
       #
@@ -142,7 +167,23 @@ jobs:
       # through EGL's surfaceless platform, needing neither a display nor a
       # DRM device. See the EGL_PLATFORM/GALLIUM_DRIVER env above.
       - name: Software OpenGL (llvmpipe)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1-mesa-dri libgbm1
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # libgl1-mesa-dri carries swrast_dri.so, the actual software driver.
+          # libegl1 alone gets you an EGL loader with nothing behind it, which
+          # fails silently: eglInitialize succeeds, no config is found, and the
+          # tests skip as though the machine had no GL at all.
+          sudo apt-get install -y libegl1 libegl-mesa0 libgl1-mesa-dri libgbm1 mesa-utils
+          # Prove the driver is actually present and a context is reachable,
+          # rather than discovering it from 18 skipped tests later.
+          ls -1 /usr/lib/x86_64-linux-gnu/dri/ | grep -E 'swrast|llvmpipe' \
+            || { echo "::error::no software DRI driver installed"; exit 1; }
+          node -e "
+            const gl = require('native-gles');
+            if (!gl.createContext(64, 64)) { console.error('no GLES context'); process.exit(1); }
+            console.log('GLES:', gl.glGetString(0x1F02));
+          " || { echo "::error::software GL context unavailable"; exit 1; }
 
       - uses: actions/setup-node@v7
         with:
@@ -204,6 +245,15 @@ jobs:
 
       - name: Install
         run: npm ci || npm install
+
+      # Fail loudly here rather than discovering it from 18 skipped tests.
+      - name: Software GL is actually usable
+        run: |
+          node -e "
+            const gl = require('native-gles');
+            if (!gl.createContext(64, 64)) { console.error('no GLES context'); process.exit(1); }
+            console.log('GL_VERSION:', gl.glGetString(0x1F02));
+          "
 
       # Keep the committed artifacts to compare against after the rebuild.
       # Copied, not moved: a build.sh that fails early must leave the repo's
