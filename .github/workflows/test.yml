@@ -74,7 +74,7 @@ jobs:
         run: |
           node bin/abtool.js verify runtimes/c/start
           node bin/abtool.js pack runtimes/c/start /tmp/scaffold.ab
-          node bin/abtool.js inspect /tmp/diagnostic.ab
+          node bin/abtool.js inspect /tmp/scaffold.ab
 
   # A published tarball is not the same thing as a green checkout: `files` can
   # omit something the entry point imports, and nobody notices until install.
@@ -100,7 +100,7 @@ jobs:
           })"
           node -e "import('active-bezel/host').then(() => console.log('subpath export OK'))"
           test -x node_modules/.bin/abtool || { echo "abtool bin not linked"; exit 1; }
-          node_modules/.bin/abtool verify node_modules/active-bezel/examples/diagnostic >/dev/null
-          node_modules/.bin/abtool pack node_modules/active-bezel/examples/diagnostic /tmp/from-tarball.ab >/dev/null
+          node_modules/.bin/abtool verify node_modules/active-bezel/runtimes/c/start >/dev/null
+          node_modules/.bin/abtool pack node_modules/active-bezel/runtimes/c/start /tmp/from-tarball.ab >/dev/null
           node_modules/.bin/abtool inspect /tmp/from-tarball.ab >/dev/null
           echo "abtool bin resolves and round-trips a package from the tarball"
