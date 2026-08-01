@@ -4,6 +4,7 @@ import {
 } from './Compositor.js';
 import { loadPreset, resolveSizes } from './GlslPreset.js';
 import { GlslChain } from './GlslChain.js';
+import { decodeImageFile } from './decodeImage.js';
 
 /*
  * `native-gles` is a REQUIRED dependency -- every consumer of this package
@@ -579,19 +580,18 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   /*
    * Upload a preset's lookup textures.
    *
-   * LUTs arrive as PNG on disk, and this package has no image decoder: guests
-   * decode their own images inside the wasm (stb_image is linked into every
-   * runtime) and hand the host raw RGBA. Rather than pull a decoder into the
-   * host for this one path, the guest supplies them -- `decodeImageFile` is
-   * injected by whoever owns a decoder.
+   * LUTs are PNGs (occasionally JPEG) on disk. They are decoded by
+   * src/decodeImage.js, which runs the same stb_image the language runtimes
+   * link for ab.image() -- one image implementation, no native dependency.
    *
-   * Presets that need LUTs and have no decoder available REFUSE rather than
-   * render: crt-royale's mask is one of its lookup textures, and running it
-   * without one produces a picture that looks like the preset works and is
-   * quietly missing its defining feature.
+   * `decodeImageFile` on the instance overrides it, for an embedder that
+   * already has a decoder. If neither is available the preset REFUSES rather
+   * than rendering: a mask is the defining feature of a shader that asks for
+   * one, and running without it looks like the preset worked.
    */
   _loadPresetTextures(chain, preset) {
-    if (preset.textures.length && typeof this.decodeImageFile !== 'function') {
+    const decode = this.decodeImageFile ?? decodeImageFile;
+    if (preset.textures.length && typeof decode !== 'function') {
       throw new Error(
         `preset needs ${preset.textures.length} lookup texture(s) ` +
         `(${preset.textures.map((t) => t.name).join(', ')}) but no image decoder is wired up. ` +
@@ -601,7 +601,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       if (!lut.exists) {
         throw new Error(`preset lookup texture not found: ${lut.path}`);
       }
-      const decoded = this.decodeImageFile(lut.path);
+      const decoded = decode(lut.path);
       if (!decoded) throw new Error(`preset lookup texture failed to decode: ${lut.path}`);
       const lutIds = new Uint32Array(1);
       gl.glGenTextures(1, lutIds);

@@ -10,6 +10,7 @@ import {
 } from '../src/GlslPreset.js';
 import { GlslChain } from '../src/GlslChain.js';
 import { ActiveBezelGpuCompositor } from '../src/GpuCompositor.js';
+import { decodeImage, decodeImageFile } from '../src/decodeImage.js';
 
 /* A preset on disk, since loadPreset resolves and reads real paths. */
 function writePreset(body, shaders = {}) {
@@ -622,5 +623,64 @@ describe('glslp: chain execution', () => {
       seen.push(call.args[1]);
     }
     assert.deepEqual(seen, [0, 1, 0, 1], 'frame_count_mod 2 must wrap');
+  });
+});
+
+describe('glslp: lookup textures', () => {
+  test('the built-in decoder reads every PNG the shader corpus ships', (t) => {
+    const root = findCorpus();
+    if (!root) return t.skip('no shaders_glsl on this machine');
+    const files = execSync(`find ${JSON.stringify(root)} -iname '*.png'`, { maxBuffer: 1 << 28 })
+      .toString().trim().split('\n').filter(Boolean);
+    assert.ok(files.length > 50, `expected a real corpus, found ${files.length}`);
+
+    /* These are not uniform: the corpus has truecolor, RGBA, 1/2/4/8-bit
+     * palette, grayscale and one 16-bit image. A decoder that only handled
+     * 8-bit truecolor would pass a spot-check and corrupt the rest. */
+    const failed = [];
+    for (const file of files) {
+      const img = decodeImageFile(file);
+      if (!img || !img.width || !img.height || img.pixels.length !== img.width * img.height * 4) {
+        failed.push(file.split('/').pop());
+      }
+    }
+    assert.deepEqual(failed, [], 'PNGs the decoder could not read');
+  });
+
+  test('a preset with LUTs runs now that a decoder exists', (t) => {
+    const root = findCorpus();
+    if (!root) return t.skip('no shaders_glsl on this machine');
+    const path = join(root, 'handheld', 'lcd-shader-psp-color.glslp');
+    if (!existsSync(path)) return t.skip('preset not installed');
+    const preset = loadPreset(path);
+    if (!preset.textures.length) return t.skip('installed preset has no LUTs');
+
+    const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 256, outputHeight: 256 });
+    if (!gpu) return t.skip('OpenGL ES context unavailable');
+    const surface = gpu.surfaceCreate(128, 128);
+    const src = new Uint8Array(64 * 64 * 4).fill(128);
+    assert.equal(gpu.surfacePreset(-1, surface, path, src, 64, 64), 1,
+      gpu.effectError ?? 'preset refused');
+    assert.equal(gpu.chains.get(path).luts.size, preset.textures.length,
+      'every declared LUT must reach the GPU');
+  });
+
+  test('garbage is rejected rather than decoded into nonsense', () => {
+    assert.equal(decodeImage(Buffer.from('this is not an image')), null);
+    assert.equal(decodeImage(Buffer.alloc(0)), null);
+  });
+
+  test('a preset whose LUT file is missing refuses, naming the file', (t) => {
+    const gpu = ActiveBezelGpuCompositor.create({ outputWidth: 64, outputHeight: 64 });
+    if (!gpu) return t.skip('OpenGL ES context unavailable');
+    const path = writePreset([
+      'shaders = 1',
+      'shader0 = "s.glsl"',
+      'textures = "MASK"',
+      'MASK = "shaders/absent.png"',
+    ].join('\n'), { 's.glsl': STOCK });
+    const surface = gpu.surfaceCreate(64, 64);
+    assert.equal(gpu.surfacePreset(-1, surface, path, new Uint8Array(64), 4, 4), 0);
+    assert.match(gpu.effectError ?? '', /absent\.png/);
   });
 });
