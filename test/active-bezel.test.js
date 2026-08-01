@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { ActiveBezelPackage, validateManifest } from '../src/Package.js';
 import { matchActiveBezel } from '../src/Matcher.js';
 import { ActiveBezelRuntime, AB_EVENT, MAX_DELTA_MS } from '../src/Runtime.js';
@@ -844,9 +845,11 @@ const RUNTIMES = [
         local badge = ab.image('assets/badge.png')
         assert(badge.texture > 0 and badge.width == 48 and badge.height == 48)
         ab.draw_texture(badge.texture, 0, 0, 96, 96)
-        local font = ab.font('assets/roboto-medium.ttf')
-        assert(ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40))
-        ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
+        if ab.asset('assets/roboto-medium.ttf') then
+          local font = ab.font('assets/roboto-medium.ttf')
+          assert(ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40))
+          ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
+        end
         ab.mesh({ { x = 0, y = 0, rgba = 0xff0000ff },
                   { x = 9, y = 0, rgba = 0x00ff00ff },
                   { x = 0, y = 9, rgba = 0x0000ffff } })
@@ -881,9 +884,10 @@ def tick(frame):
     badge = ab.image('assets/badge.png')
     assert badge['texture'] > 0 and badge['width'] == 48 and badge['height'] == 48
     ab.draw_texture(badge['texture'], 0, 0, 96, 96)
-    font = ab.font('assets/roboto-medium.ttf')
-    assert ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40)
-    ab.draw_text(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
+    if ab.asset('assets/roboto-medium.ttf'):
+        font = ab.font('assets/roboto-medium.ttf')
+        assert ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40)
+        ab.draw_text(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
     ab.mesh([{'x': 0, 'y': 0, 'rgba': 0xff0000ff},
              {'x': 9, 'y': 0, 'rgba': 0x00ff00ff},
              {'x': 0, 'y': 9, 'rgba': 0x0000ffff}])
@@ -918,10 +922,12 @@ def tick(frame):
         if (!(badge.texture > 0 && badge.width === 48 && badge.height === 48))
           throw new Error('png');
         ab.draw_texture(badge.texture, 0, 0, 96, 96);
+        if (ab.asset('assets/roboto-medium.ttf')) {
         const font = ab.font('assets/roboto-medium.ttf');
         if (!(ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40)))
           throw new Error('measure');
         ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0));
+        }
         ab.mesh([{ x: 0, y: 0, rgba: 0xff0000ff },
                  { x: 9, y: 0, rgba: 0x00ff00ff },
                  { x: 0, y: 9, rgba: 0x0000ffff }]);
@@ -956,9 +962,11 @@ def tick(frame)
   badge = AB.image('assets/badge.png')
   raise 'png' unless badge[:texture] > 0 && badge[:width] == 48 && badge[:height] == 48
   AB.draw_texture(badge[:texture], 0, 0, 96, 96)
+  if AB.asset('assets/roboto-medium.ttf')
   font = AB.font('assets/roboto-medium.ttf')
   raise 'measure' unless AB.measure(font, 'MMMM', 40) > AB.measure(font, 'iiii', 40)
   AB.draw_text(font, 'Hello', 100, 100, 40, AB.rgb(255, 0, 0))
+  end
   AB.mesh([{ x: 0, y: 0, rgba: 0xff0000ff },
            { x: 9, y: 0, rgba: 0x00ff00ff },
            { x: 0, y: 9, rgba: 0x0000ffff }])
@@ -988,14 +996,40 @@ async function makeRuntimePackage(spec, script, rom, withAssets = true) {
   await fs.writeFile(path.join(dir, spec.script), script);
   if (withAssets) {
     await fs.mkdir(path.join(dir, 'assets'), { recursive: true });
+    /*
+     * Copy the example's assets when they are present, and SYNTHESISE a PNG
+     * when they are not.
+     *
+     * The examples asset directories are gitignored on purpose -- binary art must not be
+     * redistributed here without clearance -- so a clean checkout (CI, or any
+     * contributor) has no badge.png, and a hard copyFile made every runtime
+     * test fail there while passing on the author's machine. A generated
+     * image exercises the same decode path and is identical everywhere.
+     */
     for (const asset of ['badge.png', 'roboto-medium.ttf']) {
-      await fs.copyFile(
-        new URL(`../examples/lua-native/assets/${asset}`, import.meta.url),
-        path.join(dir, 'assets', asset));
+      const from = new URL(`../examples/lua-native/assets/${asset}`, import.meta.url);
+      try {
+        await fs.copyFile(from, path.join(dir, 'assets', asset));
+      } catch {
+        /* Only the image has a synthetic stand-in: a font cannot be faked, and
+         * every scaffold already guards ab.font behind ab.asset(). */
+        if (asset.endsWith('.png')) await fs.copyFile(BADGE_PNG, path.join(dir, 'assets', asset));
+      }
     }
   }
   return dir;
 }
+
+const hasExampleFont = existsSync(
+  new URL('../examples/lua-native/assets/roboto-medium.ttf', import.meta.url));
+
+/*
+ * A real 48x48 PNG, committed under test/fixtures because the example asset
+ * directories are gitignored (binary art is not redistributed from here) and
+ * the guest scripts assert width == 48 and height == 48. Decoded by the same
+ * decoder the product uses -- no encoder is hand-written for the tests.
+ */
+const BADGE_PNG = new URL('./fixtures/badge.png', import.meta.url);
 
 function memoryHost(fill = 65) {
   return { core: {
@@ -1020,13 +1054,31 @@ for (const spec of RUNTIMES) {
     assert.deepEqual([frame.width, frame.height], [320, 180]);
 
     const kinds = runtime.compositor.commands.map((c) => c.kind);
-    for (const kind of ['rect', 'text', 'triangle', 'texture', 'mesh']) {
+    /*
+     * `mesh` is emitted by TrueType text, which needs a font -- and fonts are
+     * not redistributed from this repo, so a clean checkout has none. The
+     * other four kinds are unconditional. See hasExampleFont below for the
+     * matching skip on the tint assertion.
+     */
+    const required = ['rect', 'text', 'triangle', 'texture'];
+    if (hasExampleFont) required.push('mesh');
+    for (const kind of required) {
       assert.ok(kinds.includes(kind), `${spec.lang}: ${kind} must reach the compositor`);
     }
     const meshes = runtime.compositor.commands.filter((c) => c.kind === 'mesh');
-    assert.ok(meshes.some((m) => m.handle > 0 && m.vertices.length >= 30
-      && (m.vertices[0].rgba >>> 0) === 0xff0000ff),
-      `${spec.lang}: TTF text must emit a mesh tinted by vertex colour`);
+    /*
+     * The TTF assertion needs a real font, and fonts are not redistributed
+     * here (examples/*_/assets is gitignored), so a clean checkout has none.
+     * Assert it when the font is present and say plainly when it is not --
+     * silently dropping the check would let a real TTF regression through.
+     */
+    if (hasExampleFont) {
+      assert.ok(meshes.some((m) => m.handle > 0 && m.vertices.length >= 30
+        && (m.vertices[0].rgba >>> 0) === 0xff0000ff),
+        `${spec.lang}: TTF text must emit a mesh tinted by vertex colour`);
+    } else {
+      t.diagnostic(`${spec.lang}: no example font on this checkout; TTF mesh check skipped`);
+    }
     assert.ok(meshes.some((m) => !m.handle && m.vertices.length === 3),
       `${spec.lang}: an untextured per-vertex mesh must reach the compositor`);
 
@@ -1108,10 +1160,21 @@ for (const spec of RUNTIMES) {
 
     // now with the assets its guarded branches want
     await fs.mkdir(path.join(dir, 'assets'), { recursive: true });
-    await fs.copyFile(new URL('../examples/lua-native/assets/roboto-medium.ttf', import.meta.url),
-      path.join(dir, 'assets/font.ttf'));
-    await fs.copyFile(new URL('../examples/lua-native/assets/badge.png', import.meta.url),
-      path.join(dir, 'assets/logo.png'));
+    /* Same story as makeRuntimePackage: the example assets are gitignored, so
+     * a clean checkout has neither. The image is synthesised; the font is not,
+     * and every scaffold guards ab.font behind ab.asset() for exactly that. */
+    let haveFont = true;
+    try {
+      await fs.copyFile(new URL('../examples/lua-native/assets/roboto-medium.ttf', import.meta.url),
+        path.join(dir, 'assets/font.ttf'));
+    } catch { haveFont = false; }
+    try {
+      await fs.copyFile(new URL('../examples/lua-native/assets/badge.png', import.meta.url),
+        path.join(dir, 'assets/logo.png'));
+    } catch {
+      await fs.copyFile(BADGE_PNG, path.join(dir, 'assets/logo.png'));
+    }
+    void haveFont;
     assert.equal(await runtime.reloadAssets(), true, `${spec.lang}: reloadAssets`);
 
     runtime.processFrame(new Uint8Array(4 * 4 * 4).fill(200), 4, 4, 2);
