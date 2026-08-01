@@ -76,10 +76,29 @@ jobs:
           npm test 2>&1 | tee /tmp/test.log
           status=$?
           skipped=$(grep -E '^. skipped ' /tmp/test.log | tail -1 | grep -oE '[0-9]+$')
+
+          # A GPU-less runner cannot run the GL tests, and those skips are
+          # expected forever. Every OTHER skip means a runtime failed to LOAD
+          # despite its wasm being committed -- a real regression that a plain
+          # "tests passed" would hide, because node:test exits 0 with skips.
+          # So subtract the known-unavoidable ones and gate on the remainder.
+          # A GPU-less runner cannot run the GL tests, and a runner without a
+          # RetroArch install cannot run the shader-corpus tests. Both are
+          # expected on CI, forever. Every OTHER skip means a runtime failed to
+          # LOAD despite its wasm being committed -- a real regression a plain
+          # "tests passed" would hide, since node:test exits 0 with skips.
+          #
+          # Matched by REASON, not by counting: a skipped `describe` reports
+          # one line but several skipped subtests, so line counts and the
+          # summary total do not agree.
+          unexpected=$(grep -E '^﹣' /tmp/test.log \
+            | grep -v 'OpenGL ES context unavailable' \
+            | grep -v 'no shaders_glsl on this machine' \
+            | grep -v 'preset not installed' || true)
           echo "exit=${status} skipped=${skipped:-0}"
-          if [ "${skipped:-0}" -ne 0 ]; then
-            echo "::error::${skipped} test(s) skipped; every runtime wasm is committed so nothing should skip"
-            grep -E 'skip' /tmp/test.log | head -20
+          if [ -n "$unexpected" ]; then
+            echo "::error::test(s) skipped for reasons other than a missing GPU or shader corpus"
+            echo "$unexpected" | head -20
             exit 1
           fi
           exit "$status"

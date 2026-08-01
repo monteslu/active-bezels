@@ -9,6 +9,10 @@ cd "$(dirname "$0")"
 LUA_VERSION=5.4.7
 EMCC="${EMCC:-emcc}"
 command -v "$EMCC" >/dev/null || EMCC="$HOME/code/mine/emsdk/upstream/emscripten/emcc"
+# emar the same way: on PATH when emsdk_env is sourced (CI), otherwise the
+# author's local emsdk. Hardcoding the second broke every CI rebuild.
+EMAR="${EMAR:-emar}"
+command -v "$EMAR" >/dev/null || EMAR="$HOME/code/mine/emsdk/upstream/emscripten/emar"
 
 if [ ! -f vendor/liblua54.a ]; then
   mkdir -p vendor
@@ -30,7 +34,7 @@ if [ ! -f vendor/liblua54.a ]; then
   ( cd vendor/lua/src && \
     "$EMCC" -O2 -c $CORE -DAB_LUA_NOFILES -sSUPPORT_LONGJMP=wasm \
       -include "$HERE/abconf.h" && \
-    "$HOME/code/mine/emsdk/upstream/emscripten/emar" rcs ../../liblua54.a *.o && rm -f *.o )
+    "$EMAR" rcs ../../liblua54.a *.o && rm -f *.o )
 fi
 
 # -sSUPPORT_LONGJMP=wasm is REQUIRED: Lua's error handling is setjmp/longjmp
