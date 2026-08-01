@@ -18,9 +18,9 @@ picture entirely.
 
 ![A bezel putting the running game on a CRT in a 1983 basement](docs/media/1983-bezel.gif)
 
-*The whole 1920×1080 frame is drawn by the bezel: a photographed room, the live
-game mapped onto the curved glass of the television with a multi-pass CRT
-shader, and the photo's own alpha trimming the picture to the tube. The game is
+*Every pixel of that 1920×1080 frame is drawn by the bezel: a photographed
+room, the live game mapped onto the curved glass with a multi-pass CRT shader,
+and the photo's own alpha trimming the picture to the tube. The game is
 [Nova the Squirrel](https://github.com/NovaSquirrel/NovaTheSquirrel), an
 open-source NES homebrew.*
 
