@@ -82,10 +82,14 @@ next to a script and you have a bezel:
 
 | Runtime | Language | Size | Script |
 |---|---|---|---|
-| `runtimes/lua/` | Lua 5.4 | 345 KB | `main.lua` |
-| `runtimes/python/` | MicroPython | 242 KB | `main.py` |
-| `runtimes/js/` | QuickJS | 544 KB | `main.js` |
-| `runtimes/ruby/` | mruby | 587 KB | `main.rb` |
+| `runtimes/lua/` | Lua 5.4 | 337 KB | `main.lua` |
+| `runtimes/python/` | MicroPython | 237 KB | `main.py` |
+| `runtimes/js/` | QuickJS (ES2023) | 532 KB | `main.js` |
+| `runtimes/ruby/` | mruby 3.4 | 574 KB | `main.rb` |
+
+All four expose the identical API -- including offscreen surfaces, GLSL effects
+and multi-pass `.glslp` presets -- so a bezel ports between them by changing
+syntax, not capability.
 
 ```sh
 mkdir -p my-bezel/assets
@@ -96,8 +100,8 @@ $EDITOR my-bezel/main.py
 
 Each runtime's scaffold is a working bezel with a commented example of every
 capability: 2D shapes, the live game, TrueType and bitmap text, live memory
-reads, transforms, a decoded PNG, a per-vertex mesh, and a GLSL effect. All four
-speak the same API, so a bezel ports between languages by changing syntax.
+reads, transforms, a decoded PNG, a tilted perspective quad, a per-vertex mesh,
+and a GLSL effect.
 
 ```python
 def tick(frame):
@@ -122,9 +126,36 @@ npx abtool inspect my-bezel.ab
 `pack` emits a deterministic stored ZIP. `.ab` is deliberately ordinary — rename
 it to `.zip` and look inside.
 
-**With a compiler.** A guest can be any language that emits suitable
-WebAssembly: freestanding C (see [`sdk/active_bezel.h`](sdk/active_bezel.h)),
-Rust, Zig. `npx abtool scaffold my-bezel c` starts one.
+**With a compiler: any language that emits WebAssembly.**
+
+A bezel is a wasm module. There is no privileged language and no runtime this
+package has to bless -- the contract is small enough to implement anywhere:
+
+- import from one module, `ab_host`
+- export five functions: `ab_abi_version`, `ab_init`, `ab_tick`, `ab_event`,
+  `ab_shutdown` (three more are optional, for guests that render their own
+  framebuffer rather than emitting draw commands)
+- no WASI, no filesystem, no clock beyond what `ab_host` hands you
+
+Anything that can produce a freestanding `wasm32` module qualifies:
+
+| Language | Notes |
+|---|---|
+| **C / C++** | [`sdk/active_bezel.h`](sdk/active_bezel.h) is the reference binding. `npx abtool scaffold my-bezel c` starts one. |
+| **Rust** | `--target wasm32-unknown-unknown`, `#[no_mangle]` exports, `extern "C"` imports |
+| **Zig** | `-target wasm32-freestanding`, `export fn` |
+| **AssemblyScript** | TypeScript-shaped, compiles straight to wasm |
+| **Go (TinyGo)** | `tinygo build -target wasm` |
+| **Odin, Nim, D, ...** | anything with a freestanding wasm backend |
+
+The full ABI is machine-readable in [`sdk/abi.json`](sdk/abi.json) -- every host
+import and guest export with its signature -- so a binding for a new language is
+a mechanical translation. A guest imports only what it uses: the prebuilt
+runtimes take 55 of the 58 available.
+
+The four prebuilt runtimes above are themselves just wasm guests built this way,
+from C. They exist because most bezels are not worth a compile step, not because
+scripting is the supported path and compiling is not.
 
 ## Dependencies
 
