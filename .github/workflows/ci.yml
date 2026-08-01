@@ -60,15 +60,10 @@ jobs:
           # fails silently: eglInitialize succeeds, no config is found, and the
           # tests skip as though the machine had no GL at all.
           sudo apt-get install -y libegl1 libegl-mesa0 libgl1-mesa-dri libgbm1 mesa-utils
-          # Prove the driver is actually present and a context is reachable,
-          # rather than discovering it from 18 skipped tests later.
+          # Prove the driver file landed. The context itself is probed after
+          # npm install, once native-gles exists on disk.
           ls -1 /usr/lib/x86_64-linux-gnu/dri/ | grep -E 'swrast|llvmpipe' \
             || { echo "::error::no software DRI driver installed"; exit 1; }
-          node -e "
-            const gl = require('native-gles');
-            if (!gl.createContext(64, 64)) { console.error('no GLES context'); process.exit(1); }
-            console.log('GLES:', gl.glGetString(0x1F02));
-          " || { echo "::error::software GL context unavailable"; exit 1; }
 
       - uses: actions/setup-node@v7
         with:
@@ -175,15 +170,10 @@ jobs:
           # fails silently: eglInitialize succeeds, no config is found, and the
           # tests skip as though the machine had no GL at all.
           sudo apt-get install -y libegl1 libegl-mesa0 libgl1-mesa-dri libgbm1 mesa-utils
-          # Prove the driver is actually present and a context is reachable,
-          # rather than discovering it from 18 skipped tests later.
+          # Prove the driver file landed. The context itself is probed after
+          # npm install, once native-gles exists on disk.
           ls -1 /usr/lib/x86_64-linux-gnu/dri/ | grep -E 'swrast|llvmpipe' \
             || { echo "::error::no software DRI driver installed"; exit 1; }
-          node -e "
-            const gl = require('native-gles');
-            if (!gl.createContext(64, 64)) { console.error('no GLES context'); process.exit(1); }
-            console.log('GLES:', gl.glGetString(0x1F02));
-          " || { echo "::error::software GL context unavailable"; exit 1; }
 
       - uses: actions/setup-node@v7
         with:
