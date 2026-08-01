@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.0
+
+### Universal packages
+
+A bezel can now declare that it works with **any** ROM:
+
+```json
+{ "universal": true, "games": [] }
+```
+
+and it matches every ROM at a new level, `universal`, with no force needed.
+
+Not every bezel is about a specific game. A CRT-in-a-room, a scanline filter,
+a border, a shader showcase -- these read no game state and work with
+anything. Until now the only way to say so was an empty `games` list, which
+means "matches nothing" and is indistinguishable from a package whose author
+forgot to list its ROMs. So a deliberately game-agnostic bezel could only be
+loaded with `force`, and the host had to tell users that a package built to
+work everywhere "does not match this ROM".
+
+`universal` is mutually exclusive with `games` and `compatible` -- a package
+either works with any ROM or it works with specific ones -- and a manifest
+claiming both is rejected when it loads rather than surfacing as a confusing
+match later. It is also distinct from `forced`: forced means the user
+overrode a failed match, universal means the author said no match was ever
+required, and a host can report the difference honestly.
+
 ## 0.4.1
 
 `abtool scaffold` worked for `lua` and `c` and failed for `js`, `python` and

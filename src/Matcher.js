@@ -11,6 +11,20 @@ export function identifyRom(bytes, platform) {
 
 export function matchActiveBezel(manifest, romBytes, platform, { force = false } = {}) {
   const identity = identifyRom(romBytes, platform);
+
+  /*
+   * A universal package matches everything, by declaration.
+   *
+   * Checked FIRST and unconditionally: there is nothing to compare, because
+   * the package makes no claim about which ROM it is for. This is a distinct
+   * level from 'forced' -- forced means the user overrode a failed match,
+   * universal means the author said no match was ever needed -- so a host can
+   * report the difference honestly instead of implying an override happened.
+   */
+  if (manifest.universal) {
+    return { level: 'universal', identity, rule: null, label: null };
+  }
+
   const exact = manifest.games.find((g) =>
     g.platform === platform && g.sha256.toLowerCase() === identity.sha256);
   if (exact) return { level: 'exact', identity, rule: exact, label: exact.label ?? null };

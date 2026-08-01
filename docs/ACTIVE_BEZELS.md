@@ -76,6 +76,7 @@ The required manifest fields are:
     "platform": "nes",
     "sha256": "64 lowercase hex characters"
   }],
+  "universal": false,
   "requires": [{ "region": "system_ram", "minSize": 2048 }],
   "settings": []
 }
@@ -85,6 +86,38 @@ Exact SHA-256 matches are authoritative. `compatible` rules may additionally
 identify known revisions by platform, total size, and multiple byte signatures.
 They are weaker and reported as such. Mismatches never auto-attach; the player
 may explicitly force one.
+
+### Universal packages
+
+Not every bezel is about a specific game. A CRT-in-a-room, a scanline filter, a
+border, a shader showcase -- these read no game state and work with anything.
+Such a package declares:
+
+```json
+{ "universal": true, "games": [] }
+```
+
+and matches every ROM at level `universal`, with no force needed.
+
+This is a **claim, not an omission**. An empty `games` list means "matches
+nothing", which is indistinguishable from a package whose author forgot to
+list its ROMs -- so without this flag a deliberately game-agnostic bezel could
+only be loaded with force, and the host had to tell the user that a package
+built to work everywhere "does not match this ROM".
+
+`universal` is mutually exclusive with `games` and `compatible`: a package
+either works with any ROM or it works with specific ones, and a manifest
+claiming both is rejected at load. `universal` is also distinct from `forced`
+in what it reports -- forced means the user overrode a failed match, universal
+means the author said no match was ever required.
+
+| level | meaning |
+| --- | --- |
+| `exact` | the ROM's SHA-256 is listed in `games` |
+| `compatible` | size and byte signatures match a `compatible` rule |
+| `universal` | the package declares it works with any ROM |
+| `forced` | no match, loaded anyway at the user's request |
+| `none` | no match; the package does not attach |
 
 Packages are capped at 128 MiB unpacked, each entry at 64 MiB. Absolute paths,
 traversal, backslashes, NUL names, and symlinks are rejected.

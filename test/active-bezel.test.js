@@ -170,6 +170,38 @@ test('configuration normalizes every v1 type, actions, migration and defaults', 
   assert.throws(() => config.set('unknown', true), /unknown Active Bezel setting/);
 });
 
+test('a universal package matches any ROM, without force', () => {
+  const manifest = { games: [], compatible: [], universal: true };
+  /* Two unrelated ROMs on two platforms: a universal package cares about
+   * neither, which is the whole point. */
+  assert.equal(matchActiveBezel(manifest, Buffer.from([1, 2, 3]), 'nes').level, 'universal');
+  assert.equal(matchActiveBezel(manifest, Buffer.from([9, 9]), 'snes').level, 'universal');
+
+  /* 'universal' is NOT 'forced'. Forced means the user overrode a failed
+   * match; universal means the author said no match was ever needed, and a
+   * host reports the two differently. */
+  assert.equal(matchActiveBezel({ ...manifest, universal: false }, Buffer.from([1, 2, 3]), 'nes').level,
+    'none', 'control: without the flag the same manifest matches nothing');
+});
+
+test('a universal package may not also claim specific ROMs', () => {
+  const rom = Buffer.from([1, 2, 3, 4]);
+  /* Claiming both is a contradiction -- caught when the manifest is
+   * validated, not left to surface as a confusing match result later. */
+  assert.throws(() => validateManifest({ ...manifestFor(rom), universal: true }), /universal/i);
+  assert.throws(() => validateManifest({
+    ...manifestFor(rom), games: [], universal: true,
+    compatible: [{ platform: 'nes', size: 4, signatures: [{ offset: 0, bytes: '01' }] }],
+  }), /universal/i);
+
+  /* Each alone is fine. */
+  assert.ok(validateManifest({ ...manifestFor(rom), games: [], universal: true }));
+  assert.ok(validateManifest(manifestFor(rom)));
+  /* And it must be a boolean, not a truthy string. */
+  assert.throws(() => validateManifest({ ...manifestFor(rom), games: [], universal: 'yes' }),
+    /must be a boolean/);
+});
+
 test('matching distinguishes exact, compatible, forced and none', () => {
   const rom = Buffer.from([1, 2, 3, 4]);
   const manifest = manifestFor(rom);

@@ -79,7 +79,11 @@ export class ActiveBezelRuntime {
   }
 
   async init() {
-    if (this.match.level === 'none') throw new Error('Active Bezel does not match this ROM (use force to override)');
+    if (this.match.level === 'none') {
+      throw new Error(
+        'Active Bezel does not match this ROM (use force to override, or set '
+        + '"universal": true in the manifest if the package works with any ROM)');
+    }
     const missing = this.regions.validateRequirements(this.package.manifest.requires);
     if (missing.length) throw new Error(`Active Bezel is missing required regions: ${missing.map((x) => x.region).join(', ')}`);
 

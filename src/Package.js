@@ -114,6 +114,26 @@ export function validateManifest(input) {
   if (!Array.isArray(m.games) || !Array.isArray(m.compatible) || !Array.isArray(m.requires)) {
     throw new Error('games, compatible and requires must be arrays');
   }
+  /*
+   * `universal` says "this package works with ANY ROM" -- a CRT-in-a-room
+   * bezel, a scanline filter, a border. It is a deliberate claim, not the
+   * absence of one: an empty `games` list means "matches nothing", which is
+   * indistinguishable from a package whose author simply forgot to list its
+   * ROMs. Without this flag a game-agnostic bezel could only ever be loaded
+   * with force, and the host had to tell every user that a package built to
+   * work everywhere "does not match this ROM".
+   *
+   * A universal package must not ALSO claim specific ROMs: the two are
+   * different promises, and a manifest making both is a mistake worth
+   * catching at load rather than at match time.
+   */
+  m.universal ??= false;
+  if (typeof m.universal !== 'boolean') throw new Error('universal must be a boolean');
+  if (m.universal && (m.games.length || m.compatible.length)) {
+    throw new Error(
+      'a universal package must not also list games or compatible rules — '
+      + 'it either works with any ROM or it works with specific ones');
+  }
   for (const game of m.games) {
     if (!game.platform || !/^[0-9a-f]{64}$/i.test(game.sha256 ?? '')) {
       throw new Error('each exact game needs platform and sha256');
