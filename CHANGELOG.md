@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1
+
+`abtool scaffold` worked for `lua` and `c` and failed for `js`, `python` and
+`ruby` -- a leftover `language must be c or lua` check rejected them before
+reaching the scaffold itself. 0.4.0 shipped with three of five targets broken.
+
+Scaffolds now come from `runtimes/<lang>/start/` for every language: the
+runtime, a commented source file that is already a working bezel, and a
+manifest named after the destination directory. `runtimes/c/start/` is new
+(source, header, build.sh). `examples/` is gone -- three packages that
+duplicated or contradicted what `runtimes/` already ships, two of which did
+not load.
+
 ## 0.4.0
 
 ### Multi-pass shader presets
