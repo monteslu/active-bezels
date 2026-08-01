@@ -51,7 +51,7 @@
     "overlay"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "MIT",
   "author": "Luis Montes",
