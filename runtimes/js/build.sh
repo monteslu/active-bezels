@@ -6,12 +6,20 @@
 # wasmcart-jsgame rather than re-cloning: that tree is already pinned, already
 # builds under emcc, and a fresh clone of HEAD is exactly the "nothing was
 # actually pinned" trap that bit setup_quickjs.sh. Override with QUICKJS_SRC.
+#
+# The fallback clone is pinned to the same RELEASE the donor carries. It used
+# to clone HEAD, so a machine with the donor and a machine without it (CI)
+# compiled different QuickJS source -- 21 KB of unexplained drift in the
+# committed wasm, and exactly the trap the paragraph above warns about.
 set -euo pipefail
 cd "$(dirname "$0")"
 EMCC="${EMCC:-emcc}"
 command -v "$EMCC" >/dev/null || EMCC="$HOME/code/mine/emsdk/upstream/emscripten/emcc"
 QUICKJS_SRC="${QUICKJS_SRC:-vendor/quickjs}"
 QUICKJS_DONOR="${QUICKJS_DONOR:-$HOME/code/cliemu/wasmcart-jsgame/vendor/quickjs}"
+# quickjs-ng v0.15.1, the version the donor tree carries (QJS_VERSION_* in
+# quickjs.h) and that the committed main.wasm was built from.
+QUICKJS_COMMIT="${QUICKJS_COMMIT:-fd0a0210b7be00957751871e7e01b8291268fc29}"
 
 if [ ! -f "$QUICKJS_SRC/quickjs.c" ]; then
   mkdir -p vendor
@@ -21,9 +29,12 @@ if [ ! -f "$QUICKJS_SRC/quickjs.c" ]; then
     cp -r "$QUICKJS_DONOR" "$QUICKJS_SRC"
     rm -rf "$QUICKJS_SRC/.git" "$QUICKJS_SRC/test262" "$QUICKJS_SRC/tests"
   else
-    echo "cloning quickjs-ng (no donor checkout at $QUICKJS_DONOR)"
-    git clone --depth 1 https://github.com/quickjs-ng/quickjs.git "$QUICKJS_SRC"
-    rm -rf "$QUICKJS_SRC/.git"
+    echo "cloning quickjs-ng at $QUICKJS_COMMIT (no donor at $QUICKJS_DONOR)"
+    git init -q "$QUICKJS_SRC"
+    git -C "$QUICKJS_SRC" remote add origin https://github.com/quickjs-ng/quickjs.git
+    git -C "$QUICKJS_SRC" fetch -q --depth 1 origin "$QUICKJS_COMMIT"
+    git -C "$QUICKJS_SRC" checkout -q FETCH_HEAD
+    rm -rf "$QUICKJS_SRC/.git" "$QUICKJS_SRC/test262" "$QUICKJS_SRC/tests"
   fi
 fi
 
