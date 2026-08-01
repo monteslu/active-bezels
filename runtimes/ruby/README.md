@@ -1,35 +1,75 @@
-# The prebuilt Ruby runtime
+# Ruby bezels
 
-`main.wasm` here is a complete Active Bezel guest that embeds mruby 3.4 and
-exposes the entire ab import surface to a script. A Ruby bezel ships this wasm
-as its `entry` plus its own `main.rb` (or `assets/main.rb`); iterating is
-**edit + repack**, with no compiler in the loop. The runtime re-reads the
-script on ASSETS_RELOADED and paints load/runtime errors on screen instead of
-dying, so a broken script is a visible, fixable state.
+`main.wasm` embeds **mruby 3.4.0** and hands a script the entire Active Bezel
+API. Ship this wasm as your package's `entry`, put a `main.rb` beside it, and
+you have a bezel — no compiler, no build step.
 
-## Script contract
+```sh
+cp node_modules/active-bezel/runtimes/ruby/main.wasm my-bezel/
+cp node_modules/active-bezel/runtimes/ruby/main.rb   my-bezel/   # the scaffold
+$EDITOR my-bezel/main.rb
+```
+
+The scaffold is a **working bezel**, not a stub: a commented example of every
+capability, which you edit down to what you want. Point `romdev` at the
+directory and the loop is edit, reload, look.
+
+## The contract
 
 ```ruby
 def init; end            # optional; once, after the script loads
-def tick(frame); end     # required; draw the whole scene every frame
-def event(kind); end     # optional; AB_EVENT numbers
+def tick(frame); end     # required; draw the whole scene, every frame
+def event(kind); end     # optional; the machine jumped (see AB::EVENT)
 ```
 
-The `AB` module carries the API as module functions: `clear, draw_game,
-draw_game_fit, fill_rect, triangle, text, scissor, scissor_reset,
-push_transform, pop_transform, reset_transform, translate, scale, rotate,
-mesh, texture_create, texture_destroy, draw_texture, draw_texture_rect,
-effect_set, effect_clear, game_width, game_height, game_pixel, logical_width,
-logical_height, physical_width, physical_height, elapsed_ms, delta_ms, input,
-log, region, region_find_id, region_size, region_flags, region_offset,
-region_generation, region_count, read_u8, write_u8, read, asset, image,
-image_data, font, draw_text, measure, font_metrics, read_u16, read_u24,
-read_u32, config_bool, config_number, config_string, rgb`.
+A bezel owns the whole **1920×1080** picture, including where the game goes.
+Coordinates are on that grid whatever the real output resolution is.
 
-Colors are packed `0xRRGGBBAA`; `AB.rgb(r, g, b, a = 255)` builds one.
+A broken script is a visible, fixable state, never a dead session: a syntax
+error or a raise from `tick` paints an on-screen panel naming the line, and the
+runtime re-reads `main.rb` on ASSETS_RELOADED.
 
-Constants are frozen Hashes: `AB::EVENT`, `AB::FIT`, `AB::SAMPLE`,
-`AB::DEVICE`, `AB::BTN`, keyed by Symbol (`AB::BTN[:START]`).
+## A first bezel
+
+```ruby
+W, H = 1920, 1080
+GAME_W = H * 4 / 3          # 1440; the leftover IS the bezel
+
+def init
+  $ram = AB.region('system_ram')
+end
+
+def tick(frame)
+  AB.clear(AB.rgb(14, 16, 26))
+  AB.draw_game(0, 0, GAME_W, H, AB::SAMPLE[:NEAREST])
+
+  # read the machine and show something the game never displays
+  hp = AB.read_u8($ram, 0x0E)
+  AB.fill_rect(GAME_W + 32, 80, 400 * (hp / 255.0), 24, AB.rgb(120, 200, 255))
+  AB.text(format('HP %d', hp), GAME_W + 32, 130, 32, AB.rgb(235, 238, 250))
+end
+```
+
+## The `AB` module
+
+Colours are packed `0xRRGGBBAA`; `AB.rgb(r, g, b, a = 255)` builds one.
+
+| area | functions |
+| --- | --- |
+| **draw** | `clear` `fill_rect` `triangle` `mesh` `text` `scissor` `scissor_reset` |
+| **the game** | `draw_game` `draw_game_fit` `game_width` `game_height` `game_pixel` |
+| **transform** | `push_transform` `pop_transform` `reset_transform` `translate` `scale` `rotate` `skew` `transform2d` |
+| **textures** | `texture_create` `texture_destroy` `draw_texture` `draw_texture_rect` `image` `image_data` |
+| **text** | `font` `draw_text` `measure` `font_metrics` |
+| **perspective** | `quad` |
+| **surfaces** | `surface_create` `surface_target` `surface_end` `surface_filter` `surface_preset` |
+| **shaders** | `effect_set` `effect_clear` |
+| **memory** | `region` `region_find_id` `region_size` `region_flags` `region_offset` `region_count` `region_generation` `read_u8` `read_u16` `read_u24` `read_u32` `read` `write_u8` |
+| **host** | `logical_width` `logical_height` `physical_width` `physical_height` `elapsed_ms` `delta_ms` `input` `log` `asset` `config_bool` `config_number` `config_string` `rgb` |
+
+Constants are frozen Hashes keyed by Symbol: `AB::EVENT`, `AB::FIT`,
+`AB::SAMPLE`, `AB::DEVICE`, `AB::BTN` (`AB::BTN[:START]`). `AB::GAME` is the
+live-frame handle — pass it anywhere a texture is wanted.
 
 ### Ruby shapes
 
@@ -52,6 +92,18 @@ already answers to, so a bare `print(...)` inside a class body would silently
 reach Kernel's rather than the bezel's. `AB.print` still exists as an alias for
 parity with the Lua runtime's `ab.print`, but `AB.draw_text` is the name that
 cannot collide.
+
+## Shader presets
+
+```ruby
+tube = AB.surface_create(512, 448)
+AB.surface_preset(AB::GAME, tube, 'crt-lottes.glslp')   # a whole multi-pass chain
+AB.draw_texture(tube, 240, 0, 1440, 1080)
+```
+
+No shaders ship with this package. See
+[the preset docs](../../docs/ACTIVE_BEZELS.md#shader-presets-glslp) for where to
+get them and which ones work.
 
 ## Building the runtime
 

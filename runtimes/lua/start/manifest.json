@@ -1,0 +1,18 @@
+{
+  "format": "active-bezel",
+  "formatVersion": 1,
+  "id": "local.my-bezel",
+  "name": "My Bezel",
+  "version": "0.1.0",
+  "author": "you",
+  "description": "A starting point. Edit main.lua.",
+  "license": "MIT",
+  "entry": "main.wasm",
+  "runtime": {
+    "abi": "active-bezel-1",
+    "renderer": "gpu-command-v1",
+    "internalResolution": [1920, 1080],
+    "extensions": []
+  },
+  "games": []
+}

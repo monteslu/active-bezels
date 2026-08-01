@@ -6,10 +6,15 @@ needs **no toolchain**: copy the wasm and a script, edit, reload.
 
 | Directory | Language | Size | Script | API entry |
 |---|---|---|---|---|
-| [`lua/`](lua/) | Lua 5.4.7 | 345 KB | `main.lua` | global `ab` table |
-| [`python/`](python/) | MicroPython 1.24.1 | 242 KB | `main.py` | global `ab` module |
-| [`js/`](js/) | QuickJS | 544 KB | `main.js` | global `ab` object |
-| [`ruby/`](ruby/) | mruby 3.4.0 | 587 KB | `main.rb` | `AB` module |
+| [`lua/`](lua/) | Lua 5.4.7 | 337 KB | `main.lua` | global `ab` table |
+| [`python/`](python/) | MicroPython 1.24.1 | 237 KB | `main.py` | global `ab` module |
+| [`js/`](js/) | QuickJS 0.15.1 | 532 KB | `main.js` | global `ab` object |
+| [`ruby/`](ruby/) | mruby 3.4.0 | 574 KB | `main.rb` | `AB` module |
+
+All four expose the **same 65 functions**, with the same names and semantics.
+A bezel ports between languages by changing syntax, not capability — including
+offscreen surfaces, perspective quads, GLSL effects and multi-pass `.glslp`
+shader presets. Each runtime's README covers only where its language differs.
 
 Each directory holds:
 
