@@ -295,11 +295,9 @@ There is also an older path: `runtime.language: lua54-wasmcart` embeds the
 wasmcart-lua engine, whose framebuffer becomes the background composition with
 the game placed over it. It predates the prebuilt runtimes and cannot read
 machine regions. New work should use `runtimes/lua/` instead, which speaks the
-ab ABI directly. See `examples/lua-starter` for the legacy shape and
-`examples/lua-native` for the current one.
-
-The reproducible CPU/GPU numbers and methodology are in
-[ACTIVE_BEZEL_BENCHMARK.md](ACTIVE_BEZEL_BENCHMARK.md).
+ab ABI directly. See [`examples/lua-starter`](../examples/lua-starter) for the
+legacy shape and [`examples/lua-native`](../examples/lua-native) for the
+current one.
 
 ## Reference packages
 
@@ -333,21 +331,25 @@ A bezel does not have to be compiled. The package ships four complete guest
 runtimes, each a wasm that embeds a scripting language and exposes the entire
 host ABI to it:
 
-| Runtime | Language | Size | Script | Entry point |
-|---|---|---|---|---|
-| `runtimes/lua/` | Lua 5.4 | 345 KB | `main.lua` | global `ab` table |
-| `runtimes/python/` | MicroPython 1.24 | 242 KB | `main.py` | global `ab` module |
-| `runtimes/js/` | QuickJS | 544 KB | `main.js` | global `ab` object |
-| `runtimes/ruby/` | mruby 3.4 | 587 KB | `main.rb` | `AB` module |
+| Runtime | Language | Size | Script | Entry point | Docs |
+|---|---|---|---|---|---|
+| `runtimes/lua/` | Lua 5.4.7 | 337 KB | `main.lua` | global `ab` table | [Lua bezels](../runtimes/lua/README.md) |
+| `runtimes/python/` | MicroPython 1.24.1 | 237 KB | `main.py` | global `ab` module | [Python bezels](../runtimes/python/README.md) |
+| `runtimes/js/` | QuickJS 0.15.1 | 532 KB | `main.js` | global `ab` object | [JavaScript bezels](../runtimes/js/README.md) |
+| `runtimes/ruby/` | mruby 3.4.0 | 574 KB | `main.rb` | `AB` module | [Ruby bezels](../runtimes/ruby/README.md) |
 
-Authoring a bezel is copying two files:
+All four expose the same 65 functions with the same names and semantics; each
+README above lists them by area and covers only where that language differs.
+[Overview of all four](../runtimes/README.md).
+
+Authoring a bezel is copying one directory:
 
 ```
-my-bezel/
+my-bezel/                       <- cp -r runtimes/<lang>/start/ my-bezel/
   manifest.json      entry: "main.wasm"
-  main.wasm          <- copied from runtimes/<lang>/main.wasm
-  main.py            <- copied from runtimes/<lang>/main.py, then edited
-  assets/            <- fonts, images, whatever the script reads
+  main.wasm          the runtime
+  main.py            the scaffold, then edited
+  assets/            fonts, images, whatever the script reads (add your own)
 ```
 
 Every runtime ships a commented scaffold script beside its wasm. The scaffold

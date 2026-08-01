@@ -80,12 +80,16 @@ module as `.core` or as `.mod` — so you should not need an adapter. See
 **With no toolchain at all.** The package ships four prebuilt runtimes; copy one
 next to a script and you have a bezel:
 
-| Runtime | Language | Size | Script |
-|---|---|---|---|
-| `runtimes/lua/` | Lua 5.4 | 337 KB | `main.lua` |
-| `runtimes/python/` | MicroPython | 237 KB | `main.py` |
-| `runtimes/js/` | QuickJS (ES2023) | 532 KB | `main.js` |
-| `runtimes/ruby/` | mruby 3.4 | 574 KB | `main.rb` |
+| Runtime | Language | Size | Script | Docs |
+|---|---|---|---|---|
+| `runtimes/lua/` | Lua 5.4 | 337 KB | `main.lua` | [Lua bezels](runtimes/lua/README.md) |
+| `runtimes/python/` | MicroPython | 237 KB | `main.py` | [Python bezels](runtimes/python/README.md) |
+| `runtimes/js/` | QuickJS (ES2023) | 532 KB | `main.js` | [JavaScript bezels](runtimes/js/README.md) |
+| `runtimes/ruby/` | mruby 3.4 | 574 KB | `main.rb` | [Ruby bezels](runtimes/ruby/README.md) |
+
+Each links to its own README: quick start, the full API by area, and the
+shapes that differ in that language. [Overview of all
+four](runtimes/README.md).
 
 All four expose the identical API -- including offscreen surfaces, GLSL effects
 and multi-pass `.glslp` presets -- so a bezel ports between them by changing

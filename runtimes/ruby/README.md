@@ -5,14 +5,45 @@ API. Ship this wasm as your package's `entry`, put a `main.rb` beside it, and
 you have a bezel — no compiler, no build step.
 
 ```sh
-cp node_modules/active-bezel/runtimes/ruby/main.wasm my-bezel/
-cp node_modules/active-bezel/runtimes/ruby/main.rb   my-bezel/   # the scaffold
+cp -r node_modules/active-bezel/runtimes/ruby/start my-bezel
 $EDITOR my-bezel/main.rb
 ```
 
+`start/` holds exactly what you need and nothing else: the runtime, the
+scaffold, and a ready `manifest.json`.
+
 The scaffold is a **working bezel**, not a stub: a commented example of every
-capability, which you edit down to what you want. Point `romdev` at the
-directory and the loop is edit, reload, look.
+capability, which you edit down to what you want.
+
+## Running it
+
+A bezel is not run on its own -- a host loads it alongside a ROM. Two do:
+
+**[retroemu](https://github.com/monteslu/retroemu)** renders to a window:
+
+```sh
+retroemu game.nes --video sdl --active-bezel ./my-bezel --active-bezel-dev
+```
+
+`--active-bezel-dev` watches the directory, so saving `main.rb` reloads the
+bezel in place. That is the whole authoring loop: edit, save, look.
+
+**[romdev](https://github.com/monteslu/romdev)** composites headlessly and is
+what you want for scripted iteration -- it can capture the composite, the raw
+core framebuffer and the guest's command stream for the same frame:
+
+```js
+loadMedia({ platform: 'nes', path: 'game.nes',
+            useActiveBezel: true, activeBezelPath: './my-bezel',
+            activeBezelForce: true })
+```
+
+Both take an unpacked directory, so nothing needs packing until you ship:
+
+```sh
+npx abtool verify my-bezel
+npx abtool pack   my-bezel my-bezel.ab
+```
 
 ## The contract
 
