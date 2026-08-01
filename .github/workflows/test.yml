@@ -5,6 +5,11 @@ name: test
 # compositor are pure JS. native-gles (required) is a native addon that may fail
 # to LOAD on a given machine, and wasmcart (optional) is only for Lua guests --
 # the runtime falls back from both, and the jobs below prove it.
+#
+# Deliberately NO software GL here. ci.yml installs llvmpipe so the GL tests
+# actually run; this workflow is the other half of the contract -- that a
+# machine with no usable GL still passes everything that does not need it. If
+# both workflows had a GPU, nothing would be testing the fallback.
 
 on:
   push:

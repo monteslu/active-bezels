@@ -22,6 +22,16 @@ permissions:
   contents: read
 
 env:
+  # Real GL on a runner with no GPU and no display.
+  #
+  # All three are required. llvmpipe is Mesa's software rasteriser; surfaceless
+  # is the EGL platform that needs neither an X/Wayland display nor a DRM
+  # device. Verified locally with DISPLAY unset: without EGL_PLATFORM the
+  # context dies at "eglInitialize failed" and 18 tests skip; with it the suite
+  # is 98/98. See the "Software OpenGL" step below.
+  LIBGL_ALWAYS_SOFTWARE: '1'
+  GALLIUM_DRIVER: llvmpipe
+  EGL_PLATFORM: surfaceless
   # Pin the toolchain that produced the committed wasms. An unpinned "latest"
   # would make the drift check below meaningless -- every emsdk bump would
   # report a size delta that says nothing about whether the SOURCE changed.
@@ -33,6 +43,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # Software GL, so the OpenGL tests actually RUN on a runner with no GPU.
+      #
+      # Without it, 18 tests skip -- every GPU/CPU pixel-parity check, the
+      # offscreen-surface tests, the shader-preset tests -- which is most of
+      # what this package does. Mesa's llvmpipe gives a real GLES 3 context
+      # through EGL's surfaceless platform, needing neither a display nor a
+      # DRM device. See the EGL_PLATFORM/GALLIUM_DRIVER env above.
+      - name: Software OpenGL (llvmpipe)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1-mesa-dri libgbm1
 
       - uses: actions/setup-node@v7
         with:
@@ -82,17 +102,20 @@ jobs:
           # despite its wasm being committed -- a real regression that a plain
           # "tests passed" would hide, because node:test exits 0 with skips.
           # So subtract the known-unavoidable ones and gate on the remainder.
-          # A GPU-less runner cannot run the GL tests, and a runner without a
-          # RetroArch install cannot run the shader-corpus tests. Both are
-          # expected on CI, forever. Every OTHER skip means a runtime failed to
-          # LOAD despite its wasm being committed -- a real regression a plain
-          # "tests passed" would hide, since node:test exits 0 with skips.
+          # Only ONE skip reason is legitimate here: no RetroArch shader
+          # corpus on the runner. GL is no longer among them -- llvmpipe is
+          # installed above, so an "OpenGL ES context unavailable" skip now
+          # means software GL broke and must fail the build rather than
+          # quietly halving the suite.
+          #
+          # Every other skip means a runtime failed to LOAD despite its wasm
+          # being committed -- a real regression a plain "tests passed" would
+          # hide, since node:test exits 0 with skips.
           #
           # Matched by REASON, not by counting: a skipped `describe` reports
           # one line but several skipped subtests, so line counts and the
           # summary total do not agree.
           unexpected=$(grep -E '^﹣' /tmp/test.log \
-            | grep -v 'OpenGL ES context unavailable' \
             | grep -v 'no shaders_glsl on this machine' \
             | grep -v 'preset not installed' || true)
           echo "exit=${status} skipped=${skipped:-0}"
@@ -110,6 +133,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+
+      # Software GL, so the OpenGL tests actually RUN on a runner with no GPU.
+      #
+      # Without it, 18 tests skip -- every GPU/CPU pixel-parity check, the
+      # offscreen-surface tests, the shader-preset tests -- which is most of
+      # what this package does. Mesa's llvmpipe gives a real GLES 3 context
+      # through EGL's surfaceless platform, needing neither a display nor a
+      # DRM device. See the EGL_PLATFORM/GALLIUM_DRIVER env above.
+      - name: Software OpenGL (llvmpipe)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1-mesa-dri libgbm1
 
       - uses: actions/setup-node@v7
         with:
@@ -156,8 +189,18 @@ jobs:
             runtimes/python/micropython_embed
             runtimes/ruby/vendor
           key: engines-${{ env.EMSDK_VERSION }}-${{ hashFiles('runtimes/*/build.sh', 'runtimes/lua/abconf.h', 'runtimes/lua/patch-lua.py', 'runtimes/python/mpconfigport.h', 'runtimes/python/micropython_embed.mk', 'runtimes/ruby/mruby_wasm_config.rb') }}
-          restore-keys: |
-            engines-${{ env.EMSDK_VERSION }}-
+          # NO restore-keys, deliberately.
+          #
+          # These caches hold VENDORED ENGINE SOURCE, and build.sh is what
+          # decides which source gets fetched -- the QuickJS pin lives there.
+          # A prefix fallback would restore a tree fetched by an older build.sh
+          # and the new pin would never take effect, because the clone is
+          # skipped whenever vendor/ already exists. That is exactly what
+          # happened: the QuickJS pin landed and CI still rebuilt the old
+          # 566 KB wasm from a cached HEAD clone.
+          #
+          # An exact-match-only key means changing a build script costs one
+          # cold rebuild and then reproduces what it says it does.
 
       - name: Install
         run: npm ci || npm install
