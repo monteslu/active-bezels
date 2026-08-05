@@ -140,6 +140,36 @@ style `%` formatting, `math`.
 reads the machine and draws; everything it needs arrives through `ab`. Keep it
 to one `main.py`.
 
+## Platform redraw profiles
+
+`nes`, `gb`, `md`, `snes`, `msx` and `pce` are available as modules, already
+injected as globals the way `ab` is. The API is documented once, in
+[the Lua README](../lua/README.md#platform-redraw-profiles); the renderers
+are the same shared C core, so only the spelling differs here:
+
+- options are a dict: `msx.draw({'x': 240, 'y': 60, 'scale': 4})`
+- configuration failures raise (`RuntimeError` for a missing binding or
+  region set, `ValueError` for malformed arguments); transient conditions
+  return `None` (`draw` on a frame-read failure, `snes.tick` / `snes.draw`
+  before the core has a frame)
+- multi-value returns are tuples: `sprite_bounds()` is `(x0, y0, x1, y1)`,
+  `msx.mode()` is `(mode, description)` with `mode` set to `None` when the
+  screen mode is unsupported, `snes.frame_size()` is `(w, h)`,
+  `snes.set_hd_tiles(blob)` is `(indexed_count, rgba_count)`
+- draw results are dicts with the same keys as the Lua tables
+
+```python
+def init():
+    nes.bind()
+    hero = ab.image('assets/hero.png')
+    nes.replace_sprite({'tiles': [0x53, 0x54], 'image': hero,
+                        'base_w': 15, 'base_h': 16, 'ring': 4})
+
+def tick(frame):
+    ab.clear(ab.rgb(0, 0, 0))
+    r = nes.draw({'x': 0, 'y': 92, 'scale': 4})
+```
+
 ## Shader presets
 
 ```python

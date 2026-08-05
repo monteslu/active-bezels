@@ -148,6 +148,15 @@
       ],
       "result": "i32"
     },
+    "region_read": {
+      "params": [
+        "i32",
+        "i32",
+        "i32",
+        "i32"
+      ],
+      "result": "i32"
+    },
     "region_write_u8": {
       "params": [
         "i32",
@@ -283,6 +292,31 @@
     },
     "texture_destroy": {
       "params": [
+        "i32"
+      ],
+      "result": "i32"
+    },
+    "texture_filter": {
+      "params": [
+        "i32",
+        "i32"
+      ],
+      "result": "i32"
+    },
+    "texture_palette": {
+      "params": [
+        "i32",
+        "i32"
+      ],
+      "result": "i32"
+    },
+    "texture_update": {
+      "params": [
+        "i32",
+        "i32",
+        "i32",
+        "i32",
+        "i32",
         "i32"
       ],
       "result": "i32"

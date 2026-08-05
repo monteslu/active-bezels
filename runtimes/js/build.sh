@@ -78,7 +78,11 @@ done
 # setjmp/longjmp and the JS-trampoline default cannot work under a host that
 # provides only the ab_host module. (Same lesson as the Lua runtime and every
 # wasmcart interpreter.) No LTO: it breaks the wasm-sjlj path.
-$EMCC runtime.c ../common/ab_batteries.c ../common/ab_wasi_stubs.c $QJS_OBJS \
+$EMCC runtime.c ab_profiles_js.c \
+  ../common/ab_batteries.c ../common/ab_render.c ../common/ab_profiles.c \
+  ../common/ab_nes.c ../common/ab_gb.c ../common/ab_md.c ../common/ab_snes.c \
+  ../common/ab_msx.c ../common/ab_pce.c \
+  ../common/ab_wasi_stubs.c $QJS_OBJS \
   -Oz -I "$QUICKJS_SRC" -I . -I ../common \
   -s STANDALONE_WASM=1 --no-entry -sSUPPORT_LONGJMP=wasm \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \

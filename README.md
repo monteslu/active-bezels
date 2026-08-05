@@ -53,6 +53,7 @@ It deliberately does not belong to any one emulator. Two hosts consume it today:
 | | |
 |---|---|
 | [`docs/ACTIVE_BEZELS.md`](docs/ACTIVE_BEZELS.md) | the format and ABI |
+| [`docs/HD_TEXT.md`](docs/HD_TEXT.md) | replacing a game's 8-bit font with real letterforms |
 | [`sdk/active_bezel.h`](sdk/active_bezel.h) | C header for guests |
 | [`sdk/abi.json`](sdk/abi.json) | machine-readable ABI |
 | [`bin/abtool.js`](bin/abtool.js) | `scaffold` / `verify` / `inspect` / `pack` |
@@ -89,10 +90,10 @@ next to a script and you have a bezel:
 
 | Runtime | Language | Size | Script | Docs |
 |---|---|---|---|---|
-| `runtimes/lua/` | Lua 5.4 | 337 KB | `main.lua` | [Lua bezels](runtimes/lua/README.md) |
-| `runtimes/python/` | MicroPython | 237 KB | `main.py` | [Python bezels](runtimes/python/README.md) |
-| `runtimes/js/` | QuickJS (ES2023) | 532 KB | `main.js` | [JavaScript bezels](runtimes/js/README.md) |
-| `runtimes/ruby/` | mruby 3.4 | 574 KB | `main.rb` | [Ruby bezels](runtimes/ruby/README.md) |
+| `runtimes/lua/` | Lua 5.4 | 397 KB | `main.lua` | [Lua bezels](runtimes/lua/README.md) |
+| `runtimes/python/` | MicroPython | 287 KB | `main.py` | [Python bezels](runtimes/python/README.md) |
+| `runtimes/js/` | QuickJS (ES2023) | 579 KB | `main.js` | [JavaScript bezels](runtimes/js/README.md) |
+| `runtimes/ruby/` | mruby 3.4 | 620 KB | `main.rb` | [Ruby bezels](runtimes/ruby/README.md) |
 
 Each links to its own README: quick start, the full API by area, and the
 shapes that differ in that language. [Overview of all
@@ -101,6 +102,17 @@ four](runtimes/README.md).
 All four expose the identical API -- including offscreen surfaces, GLSL effects
 and multi-pass `.glslp` presets -- so a bezel ports between them by changing
 syntax, not capability.
+
+All four runtimes also ship the **platform redraw profiles** (`nes`, `gb`,
+`md`, `snes`, `msx`, `pce`; Ruby spells them `NES`..`PCE`): renderers that
+rebuild the game picture from the core's live memory regions instead of
+sampling its framebuffer, so a bezel can substitute sprite art, restyle
+layers or extend the playfield while everything untouched stays
+pixel-identical to the emulator. The renderers are one shared C core linked
+into every runtime, so the same call produces the same pixels in every
+language. Their exactness is measured against real-cart corpora, and every
+rendering rule they encode has a must-fail control in the test suite. See
+[Platform redraw profiles](runtimes/lua/README.md#platform-redraw-profiles).
 
 ```sh
 mkdir -p my-bezel/assets
@@ -158,6 +170,16 @@ Anything that can produce a freestanding `wasm32` module qualifies:
 | **AssemblyScript** | TypeScript-shaped, compiles straight to wasm |
 | **Go (TinyGo)** | `tinygo build -target wasm` |
 | **Odin, Nim, D, ...** | anything with a freestanding wasm backend |
+
+A C guest gets the platform redraw profiles too, without an interpreter in
+the middle: compile `runtimes/common/ab_profiles.c` plus the renderers
+(`ab_render.c`, `ab_nes.c`, `ab_gb.c`, `ab_md.c`, `ab_snes.c`, `ab_msx.c`,
+`ab_pce.c`) and `ab_wasi_stubs.c` into your module and call the
+`ab_prof_*` API from [`runtimes/common/ab_profiles.h`](runtimes/common/ab_profiles.h)
+directly -- it is the exact core the four language runtimes link, so the
+pixels are identical by construction. The profile core uses libc, so build
+with emcc (`-s STANDALONE_WASM=1 --no-entry`) rather than the scaffold's
+`-nostdlib` line; a complete NES redraw bezel lands around 15 KB of wasm.
 
 The full ABI is machine-readable in [`sdk/abi.json`](sdk/abi.json) -- every host
 import and guest export with its signature -- so a binding for a new language is

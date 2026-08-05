@@ -1,0 +1,22 @@
+{
+  "format": "active-bezel",
+  "formatVersion": 1,
+  "id": "example.hd-text",
+  "name": "HD Text (example)",
+  "version": "1.0.0",
+  "author": "active-bezels",
+  "description": "Replace a game's 8x8 font tiles with real letterforms, one glyph per tile cell.",
+  "license": "MIT",
+  "entry": "main.wasm",
+  "runtime": {
+    "abi": "active-bezel-1",
+    "renderer": "gpu-command-v1",
+    "internalResolution": [
+      1920,
+      1080
+    ],
+    "extensions": []
+  },
+  "universal": false,
+  "requires": []
+}

@@ -6,15 +6,25 @@ needs **no toolchain**: copy the wasm and a script, edit, reload.
 
 | Directory | Language | Size | Script | API entry |
 |---|---|---|---|---|
-| [`lua/`](lua/) | Lua 5.4.7 | 337 KB | `main.lua` | global `ab` table |
-| [`python/`](python/) | MicroPython 1.24.1 | 237 KB | `main.py` | global `ab` module |
-| [`js/`](js/) | QuickJS 0.15.1 | 532 KB | `main.js` | global `ab` object |
-| [`ruby/`](ruby/) | mruby 3.4.0 | 574 KB | `main.rb` | `AB` module |
+| [`lua/`](lua/) | Lua 5.4.7 | 397 KB | `main.lua` | global `ab` table |
+| [`python/`](python/) | MicroPython 1.24.1 | 287 KB | `main.py` | global `ab` module |
+| [`js/`](js/) | QuickJS 0.15.1 | 579 KB | `main.js` | global `ab` object |
+| [`ruby/`](ruby/) | mruby 3.4.0 | 620 KB | `main.rb` | `AB` module |
 
 All four expose the **same 65 functions**, with the same names and semantics.
 A bezel ports between languages by changing syntax, not capability — including
 offscreen surfaces, perspective quads, GLSL effects and multi-pass `.glslp`
 shader presets. Each runtime's README covers only where its language differs.
+
+That includes the **platform redraw profiles** (`nes`, `gb`, `md`, `snes`,
+`msx`, `pce`; Ruby spells them `NES`..`PCE`), which reconstruct the game
+picture pixel-for-pixel from the core's live memory regions instead of
+sampling the framebuffer. All the logic is one shared C core
+([`common/ab_profiles.c`](common/ab_profiles.c)) linked into every runtime;
+the per-language files are marshaling only, so the four runtimes are
+pixel-identical by construction. The API is documented once, in
+[`lua/README.md`](lua/README.md#platform-redraw-profiles); each runtime's
+README covers only its language-shaped differences.
 
 Each directory holds:
 

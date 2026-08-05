@@ -29,6 +29,12 @@
 
 #include "../common/ab_batteries.h"
 
+/* The platform redraw profiles (`nes`/`gb`/`md`/`snes`/`msx`/`pce`).
+ * All logic lives in runtimes/common/ab_profiles.c, shared with the other
+ * three runtimes; ab_profiles_js.c is marshaling only. */
+void ab_profiles_js_open(JSContext *ctx, JSValue global);
+void ab_profiles_js_shutdown(void);
+
 /* ---------------------------------------------------------------- state -- */
 
 static JSRuntime *g_rt = NULL;
@@ -777,7 +783,10 @@ static const JSCFunctionListEntry AB_FUNCS[] = {
   JS_CFUNC_DEF("image", 1, js_image),
   JS_CFUNC_DEF("image_data", 1, js_image_data),
   JS_CFUNC_DEF("font", 1, js_font),
-  JS_CFUNC_DEF("print", 6, js_print),
+  /* draw_text, not print: the same spelling in all four runtimes. Python
+   * and Ruby cannot safely bind `print` (shadows a builtin / silently
+   * reaches Kernel#print), so the portable name is the only name. */
+  JS_CFUNC_DEF("draw_text", 6, js_print),
   JS_CFUNC_DEF("measure", 3, js_measure),
   JS_CFUNC_DEF("font_metrics", 2, js_font_metrics),
   JS_CFUNC_DEF("read_u16", 3, js_read_u16),
@@ -960,6 +969,9 @@ static void boot(void) {
   }
   JS_SetPropertyStr(g_ctx, global, "ab", ab);
 
+  /* Platform redraw profiles: registers the nes/gb/md/snes/msx/pce globals. */
+  ab_profiles_js_open(g_ctx, global);
+
   console = JS_NewObject(g_ctx);
   JS_SetPropertyStr(g_ctx, console, "log", JS_NewCFunction(g_ctx, js_console_log, "log", 1));
   /* warn/error/info alias log: there is one sink (ab_log) and separate
@@ -1038,4 +1050,5 @@ AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {
   teardown();
   ab_bat_shutdown();
+  ab_profiles_js_shutdown();
 }

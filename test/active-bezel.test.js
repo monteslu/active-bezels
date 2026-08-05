@@ -474,7 +474,7 @@ test('transforms and mesh batches match between CPU and GPU', (t) => {
 });
 
 test('GPU nearest sampling picks the same texels as the CPU blitter', (t) => {
-  // The real SMB/Zanac geometry: a 256x224 core frame scaled to 1411x1080.
+  // The real NES-bezel geometry: a 256x224 core frame scaled to 1411x1080.
   // Fragment-center sampling picked a later texel than the CPU\'s left-edge
   // floor() wherever a texel boundary fell inside an output pixel -- 276k
   // differing pixels on this checkerboard before the UV half-pixel shift.
@@ -558,11 +558,34 @@ test('a long stall is clamped, and elapsed stays consistent with the deltas', as
     `elapsed jumped ${elapsed - t0}ms; it must track the clamped delta, not wall clock`);
 });
 
-test('canonical region catalog uses stable unique ids and names', () => {
-  const ids = new Set(CORE_REGIONS.map((region) => region.id));
+test('canonical region catalog uses stable unique names, ids unique per platform', () => {
   const names = new Set(CORE_REGIONS.map((region) => region.name));
-  assert.equal(ids.size, CORE_REGIONS.length);
-  assert.equal(names.size, CORE_REGIONS.length);
+  assert.equal(names.size, CORE_REGIONS.length, 'names must be unique');
+
+  // Ids are NOT globally unique, and must not be "fixed" to be. They are
+  // baked into the COMPILED cores (ROMDEV_MEMORY_* in romdev's fceumm and
+  // snes9x patches), and only one core is ever loaded, so a shared id is
+  // unambiguous at runtime: 0x110 is nes_ntmaplines under fceumm and
+  // snes_oam under snes9x. This catalog is the union of every platform,
+  // which is the only place they meet. Renumbering the JS alone makes the
+  // host ask a core for ids it does not implement -- SNES reads go empty.
+  // What MUST hold is that ids are unique WITHIN a platform prefix.
+  const prefixOf = (name) => {
+    const m = /^(save_ram|rtc|system_ram|video_ram)$/.test(name)
+      ? 'generic' : name.match(/^([a-z0-9]+)_/);
+    return m === 'generic' ? 'generic' : (m ? m[1] : 'generic');
+  };
+  const byPrefix = new Map();
+  for (const region of CORE_REGIONS) {
+    const prefix = prefixOf(region.name);
+    if (!byPrefix.has(prefix)) byPrefix.set(prefix, new Map());
+    const seen = byPrefix.get(prefix);
+    assert.ok(!seen.has(region.id),
+      `${prefix}: id 0x${region.id.toString(16)} claimed by both ` +
+      `${seen.get(region.id)} and ${region.name}`);
+    seen.set(region.id, region.name);
+  }
+
   assert.ok(names.has('nes_palette'));
   assert.ok(names.has('gb_vram'));
   assert.ok(names.has('gba_oam'));
@@ -884,7 +907,7 @@ const RUNTIMES = [
         if ab.asset('assets/roboto-medium.ttf') then
           local font = ab.font('assets/roboto-medium.ttf')
           assert(ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40))
-          ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
+          ab.draw_text(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0))
         end
         ab.mesh({ { x = 0, y = 0, rgba = 0xff0000ff },
                   { x = 9, y = 0, rgba = 0x00ff00ff },
@@ -962,7 +985,7 @@ def tick(frame):
         const font = ab.font('assets/roboto-medium.ttf');
         if (!(ab.measure(font, 'MMMM', 40) > ab.measure(font, 'iiii', 40)))
           throw new Error('measure');
-        ab.print(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0));
+        ab.draw_text(font, 'Hello', 100, 100, 40, ab.rgb(255, 0, 0));
         }
         ab.mesh([{ x: 0, y: 0, rgba: 0xff0000ff },
                  { x: 9, y: 0, rgba: 0x00ff00ff },

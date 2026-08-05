@@ -33,6 +33,12 @@
 
 #include "../common/ab_batteries.h"
 
+/* The platform redraw profiles (`NES`/`GB`/`MD`/`SNES`/`MSX`/`PCE`).
+ * All logic lives in runtimes/common/ab_profiles.c, shared with the other
+ * three runtimes; ab_profiles_rb.c is marshaling only. */
+void ab_profiles_rb_define(mrb_state *m);
+void ab_profiles_rb_shutdown(void);
+
 /* ---------------------------------------------------------------- state -- */
 
 static mrb_state *mrb = NULL;
@@ -573,8 +579,8 @@ static mrb_value ab_m_font(mrb_state *m, mrb_value self) {
 /* Named draw_text, NOT print: `print` is Kernel#print, which every object
  * already answers to. Defining AB.print as a module_function is fine, but a
  * bezel that writes a bare `print(...)` inside a class body would silently
- * hit Kernel's. draw_text is the unambiguous name; `print` stays as an alias
- * on the AB module for symmetry with the Lua runtime's ab.print. */
+ * hit Kernel's. draw_text is the unambiguous name, spelled the same in all
+ * four runtimes; there is no alias. */
 static mrb_value ab_m_draw_text(mrb_state *m, mrb_value self) {
   mrb_int font;
   const char *text; mrb_int tlen;
@@ -696,11 +702,9 @@ static const ab_binding AB_FUNCS[] = {
   { "image", ab_m_image, MRB_ARGS_REQ(1) },
   { "image_data", ab_m_image_data, MRB_ARGS_REQ(1) },
   { "font", ab_m_font, MRB_ARGS_REQ(1) },
+  /* draw_text is the only name: it is spelled the same in all four
+   * runtimes and cannot collide with Kernel#print. */
   { "draw_text", ab_m_draw_text, MRB_ARGS_REQ(6) },
-  /* See ab_m_draw_text: `print` is kept as an alias for parity with the Lua
-   * runtime's ab.print, but draw_text is the name that cannot collide with
-   * Kernel#print. */
-  { "print", ab_m_draw_text, MRB_ARGS_REQ(6) },
   { "measure", ab_m_measure, MRB_ARGS_REQ(3) },
   { "font_metrics", ab_m_font_metrics, MRB_ARGS_REQ(2) },
   { "read_u16", ab_m_read_u16, MRB_ARGS_ARG(2, 1) },
@@ -825,6 +829,8 @@ static void boot(void) {
   mrb = mrb_open();
   if (!mrb) { set_error("ruby runtime: mrb_open failed"); return; }
   define_ab_module(mrb);
+  /* Platform redraw profiles: registers the NES/GB/MD/SNES/MSX/PCE modules. */
+  ab_profiles_rb_define(mrb);
   load_script();
 }
 
@@ -881,4 +887,5 @@ AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {
   if (mrb) { mrb_close(mrb); mrb = NULL; }
   ab_bat_shutdown();
+  ab_profiles_rb_shutdown();
 }

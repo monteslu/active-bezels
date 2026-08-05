@@ -77,14 +77,14 @@ function tick(frame)
   -- 3. Panel background
   ab.fill_rect(GAME_W, 0, W - GAME_W, H, ab.rgb(20, 22, 34))
 
-  -- 4. Text. ab.print uses the TrueType font (anti-aliased, any size);
+  -- 4. Text. ab.draw_text uses the TrueType font (anti-aliased, any size);
   --    ab.text is a built-in 3x5 bitmap font -- fine for debug, not for UI.
   if font then
-    ab.print(font, 'ACTIVE BEZEL', PANEL_X, 80, 44, ab.rgb(235, 238, 250))
+    ab.draw_text(font, 'ACTIVE BEZEL', PANEL_X, 80, 44, ab.rgb(235, 238, 250))
     -- measure to right-align
     local label = string.format('%.1f ms', ab.delta_ms())
     local w = ab.measure(font, label, 28)
-    ab.print(font, label, PANEL_X + PANEL_W - w, 130, 28, ab.rgb(150, 160, 190))
+    ab.draw_text(font, label, PANEL_X + PANEL_W - w, 130, 28, ab.rgb(150, 160, 190))
   else
     ab.text('ACTIVE BEZEL', PANEL_X, 80, 40, ab.rgb(235, 238, 250))
   end
@@ -95,7 +95,7 @@ function tick(frame)
     local b = ab.read_u8(ram, 0)
     ab.fill_rect(PANEL_X, 180, PANEL_W * (b / 255), 24, ab.rgb(120, 200, 255))
     if font then
-      ab.print(font, string.format('ram[0] = 0x%02X', b), PANEL_X, 240, 26,
+      ab.draw_text(font, string.format('ram[0] = 0x%02X', b), PANEL_X, 240, 26,
                ab.rgb(150, 160, 190))
     end
   end

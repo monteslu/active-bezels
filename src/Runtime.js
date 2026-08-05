@@ -9,6 +9,7 @@ import { ActiveBezelRegions } from './Regions.js';
 import { ActiveBezelCompositor, LOGICAL_WIDTH, LOGICAL_HEIGHT } from './Compositor.js';
 import { ActiveBezelGpuCompositor } from './GpuCompositor.js';
 
+
 /*
  * Longest tick delta a guest is ever told about.
  *
@@ -136,6 +137,19 @@ export class ActiveBezelRuntime {
         region_flags: (index) => this.regions.regions[index]?.flags ?? 0,
         region_offset: (index) => this.regions.regions[index]?.ptr ?? 0,
         region_read_u8: (index, offset) => this.regions.read(index, offset),
+        /* Bulk copy: one crossing per REGION per frame instead of one per
+         * byte. A C guest snapshotting the NES resolved planes was making
+         * 122,880 region_read_u8 calls a frame; this collapses that to two.
+         * Returns bytes copied, or 0/-1 on a bad request. */
+        region_read: (index, offset, dst, length) => {
+          const memory = this.instance?.exports?.memory;
+          if (!memory || dst < 0 || length <= 0) return 0;
+          const avail = Math.max(0, memory.buffer.byteLength - dst);
+          const n = Math.min(length, avail);
+          if (n <= 0) return 0;
+          return this.regions.readInto(index, offset,
+            new Uint8Array(memory.buffer, dst, n));
+        },
         region_write_u8: (index, offset, value) => this.regions.write(index, offset, value),
         config_bool: (ptr, length) => this.config.get(readGuestString(this, ptr, length)) ? 1 : 0,
         config_number: (ptr, length) => Number(this.config.get(readGuestString(this, ptr, length))) || 0,
@@ -277,6 +291,18 @@ export class ActiveBezelRuntime {
           return this.compositor.createTexture(new Uint8Array(memory.buffer, ptr, length), width, height);
         },
         texture_destroy: (handle) => this.compositor.destroyTexture(handle),
+        /* 0 nearest, 1 linear, 2 bicubic (GPU backend; CPU stays nearest) */
+        texture_filter: (handle, mode) => this.compositor.setTextureFilter?.(handle, mode) ?? 0,
+        texture_palette: (handle, paletteHandle) =>
+          this.compositor.setTexturePalette?.(handle, paletteHandle) ?? 0,
+        texture_update: (handle, x, y, w, h, ptr) => {
+          const memory = this.instance?.exports?.memory;
+          const length = w * h * 4;
+          if (!memory || ptr < 0 || length <= 0
+            || ptr + length > memory.buffer.byteLength) return 0;
+          return this.compositor.updateTexture?.(
+            handle, x, y, w, h, new Uint8Array(memory.buffer, ptr, length)) ?? 0;
+        },
         command_draw_texture: (handle, x, y, width, height) =>
           this.compositor.drawTexture(handle, x, y, width, height),
         // Sub-rectangle variant. A guest with an atlas (a tilesheet, a glyph
@@ -359,6 +385,9 @@ export class ActiveBezelRuntime {
       if (this.compositor) this.compositor.effectTimeMs = this._elapsedMs;
     }
     this.compositor.reset();
+    // Refill snapshot-backed regions (NES CHR / APU / CPU regs) so a guest
+    // reading them per frame sees CURRENT data, not the boot-time buffer.
+    this.regions.refreshSnapshots();
     const started = performance.now();
     try {
       let luaFrame = null;
@@ -384,6 +413,13 @@ export class ActiveBezelRuntime {
       const composeStarted = performance.now();
       const composed = this.compositor.compose(gameRgba, gameWidth, gameHeight);
       const composeElapsed = performance.now() - composeStarted;
+      /* Cache the composited output by frame number so an observer capture can
+       * REUSE it instead of re-running a whole guest tick + full-resolution
+       * CPU rasterize (~120ms at 1080p) just to photograph a frame that was
+       * composed milliseconds ago. The buffer belongs to the compositor and is
+       * overwritten next tick -- consumers must copy or encode immediately. */
+      this.lastComposed = composed;
+      this.lastComposedFrame = frameNumber;
       this.stats.ticks++;
       this.stats.lastTickMs = elapsed;
       this.stats.totalTickMs += elapsed;

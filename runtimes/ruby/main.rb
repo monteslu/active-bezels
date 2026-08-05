@@ -83,7 +83,6 @@ def tick(frame)
   # 4. Text. AB.draw_text uses the TrueType font (anti-aliased, any size);
   #    AB.text is a built-in 3x5 bitmap font -- fine for debug, not for UI.
   #    It is draw_text, NOT print: a bare print would reach Kernel#print.
-  #    (AB.print is bound as an alias if you prefer it, but be explicit.)
   if $font
     AB.draw_text($font, 'ACTIVE BEZEL', PANEL_X, 80, 44, AB.rgb(235, 238, 250))
     label = format('%.1f ms', AB.delta_ms)

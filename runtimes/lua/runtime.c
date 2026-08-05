@@ -52,6 +52,12 @@ static lua_State *L = NULL;
 static char g_error[512];
 static int g_has_tick = 0, g_has_event = 0;
 
+/* The platform redraw profiles (`nes`/`gb`/`md`/`snes`/`msx`/`pce`).
+ * All logic lives in runtimes/common/ab_profiles.c, shared with the other
+ * three runtimes; ab_profiles_lua.c is marshaling only. */
+void ab_profiles_lua_open(lua_State *S);
+void ab_profiles_lua_shutdown(void);
+
 static void set_error(const char *message) {
   size_t n = strlen(message);
   if (n >= sizeof(g_error)) n = sizeof(g_error) - 1;
@@ -207,6 +213,22 @@ static int l_mesh(lua_State *S) {
   int32_t emitted = ab_mesh(v, count, texture);
   free(v);
   lua_pushinteger(S, emitted);
+  return 1;
+}
+
+/* texture_filter(handle, mode): 0 nearest, 1 linear, 2 bicubic,
+ * 3 palette-indexed bicubic; +16 = REPEAT wrap (GPU only) */
+static int l_texture_filter(lua_State *S) {
+  lua_pushinteger(S, ab_texture_filter((int32_t)luaL_checkinteger(S, 1),
+                                       (int32_t)luaL_checkinteger(S, 2)));
+  return 1;
+}
+
+/* texture_palette(handle, paletteHandle): bind a 256x1 RGBA palette texture
+ * to an index texture (RED channel = i/255) for filter mode 3. */
+static int l_texture_palette(lua_State *S) {
+  lua_pushinteger(S, ab_texture_palette((int32_t)luaL_checkinteger(S, 1),
+                                        (int32_t)luaL_checkinteger(S, 2)));
   return 1;
 }
 
@@ -509,6 +531,8 @@ static const luaL_Reg AB_FUNCS[] = {
   { "surface_filter", l_surface_filter },
   { "surface_preset", l_surface_preset },
   { "mesh", l_mesh },
+  { "texture_filter", l_texture_filter },
+  { "texture_palette", l_texture_palette },
   { "texture_create", l_texture_create },
   { "texture_destroy", l_texture_destroy },
   { "draw_texture", l_draw_texture },
@@ -540,7 +564,10 @@ static const luaL_Reg AB_FUNCS[] = {
   { "image", l_image },
   { "image_data", l_image_data },
   { "font", l_font },
-  { "print", l_print },
+  /* draw_text, not print: the same spelling in all four runtimes. Python
+   * and Ruby cannot safely bind `print` (shadows a builtin / silently
+   * reaches Kernel#print), so the portable name is the only name. */
+  { "draw_text", l_print },
   { "measure", l_measure },
   { "font_metrics", l_font_metrics },
   { "read_u16", l_read_u16 },
@@ -615,6 +642,10 @@ static void boot(void) {
   luaL_requiref(L, LUA_MATHLIBNAME, luaopen_math, 1); lua_pop(L, 1);
   luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1); lua_pop(L, 1);
   luaL_requiref(L, LUA_COLIBNAME, luaopen_coroutine, 1); lua_pop(L, 1);
+
+  /* Platform redraw profiles: GPU-native renderers with declarative
+   * substitution. Registers the `nes`/`gb`/`md`/`snes`/`msx`/`pce` globals. */
+  ab_profiles_lua_open(L);
 
   luaL_newlib(L, AB_FUNCS);
   /* Constant tables so scripts never hard-code ABI numbers. Mirrors the C
@@ -717,4 +748,5 @@ AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {
   if (L) { lua_close(L); L = NULL; }
   ab_bat_shutdown();
+  ab_profiles_lua_shutdown();
 }

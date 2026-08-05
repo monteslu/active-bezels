@@ -20,6 +20,9 @@ export { ActiveBezelRegions, CORE_REGIONS } from './src/Regions.js';
 export { ActiveBezelConfig } from './src/Config.js';
 export { ActiveBezelRuntime, AB_EVENT } from './src/Runtime.js';
 export { ActiveBezelCompositor } from './src/Compositor.js';
+// Inject a host's already-loaded native-gles so a SYMLINKED copy of this
+// package cannot pull in a SECOND native addon. See GpuCompositor.js.
+export { setGlModule } from './src/GpuCompositor.js';
 export { resolveCoreModule, coreHeap, coreMemoryObject, asBezelHost } from './src/Host.js';
 
 /*

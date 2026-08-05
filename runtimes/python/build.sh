@@ -30,7 +30,11 @@ SRC=$(find micropython_embed -name '*.c' ! -name 'mphalport.c' | sort)
 # -sSUPPORT_LONGJMP=wasm is REQUIRED: MicroPython's exception handling is
 # setjmp/longjmp (nlr), and the default JS-trampoline form cannot work under a
 # host that provides only the ab_host module. No LTO: it breaks wasm-sjlj.
-"$EMCC" runtime.c ../common/ab_batteries.c ../common/ab_wasi_stubs.c $SRC \
+"$EMCC" runtime.c ab_profiles_py.c \
+  ../common/ab_batteries.c ../common/ab_render.c ../common/ab_profiles.c \
+  ../common/ab_nes.c ../common/ab_gb.c ../common/ab_md.c ../common/ab_snes.c \
+  ../common/ab_msx.c ../common/ab_pce.c \
+  ../common/ab_wasi_stubs.c $SRC \
   -Os -DNDEBUG \
   -I . -I micropython_embed -I micropython_embed/port -I ../common \
   -s STANDALONE_WASM=1 --no-entry -sSUPPORT_LONGJMP=wasm \

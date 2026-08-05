@@ -120,9 +120,41 @@ fm = AB.font_metrics(font, 40)       # { ascent:, descent:, line_height: }
 
 **`AB.draw_text`, not `print`.** `print` is `Kernel#print`, which every object
 already answers to, so a bare `print(...)` inside a class body would silently
-reach Kernel's rather than the bezel's. `AB.print` still exists as an alias for
-parity with the Lua runtime's `ab.print`, but `AB.draw_text` is the name that
-cannot collide.
+reach Kernel's rather than the bezel's. There is no `AB.print` alias:
+`draw_text` is the one name, spelled the same in all four runtimes.
+
+## Platform redraw profiles
+
+The profiles are modules spelled the way Ruby constants must be: `NES`,
+`GB`, `MD`, `SNES`, `MSX`, `PCE`. The API is documented once, in
+[the Lua README](../lua/README.md#platform-redraw-profiles); the renderers
+are the same shared C core, so only the spelling differs here:
+
+- options are a Hash, symbol or string keys alike:
+  `MSX.draw({ x: 240, y: 60, scale: 4 })`
+- configuration failures raise (`RuntimeError` for a missing binding or
+  region set, `ArgumentError` for malformed arguments); transient
+  conditions return `nil` (`draw` on a frame-read failure, `SNES.tick` /
+  `SNES.draw` before the core has a frame)
+- multi-value returns are Arrays: `sprite_bounds` is `[x0, y0, x1, y1]`,
+  `MSX.mode` is `[mode, description]` with `mode` set to `nil` when the
+  screen mode is unsupported, `SNES.frame_size` is `[w, h]`,
+  `SNES.set_hd_tiles(blob)` is `[indexed_count, rgba_count]`
+- draw results are Hashes with symbol keys, same names as the Lua tables
+
+```ruby
+def init
+  NES.bind
+  $hero = AB.image('assets/hero.png')
+  NES.replace_sprite({ tiles: [0x53, 0x54], image: $hero,
+                       base_w: 15, base_h: 16, ring: 4 })
+end
+
+def tick(frame)
+  AB.clear(AB.rgb(0, 0, 0))
+  r = NES.draw({ x: 0, y: 92, scale: 4 })
+end
+```
 
 ## Shader presets
 

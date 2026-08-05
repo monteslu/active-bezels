@@ -81,13 +81,13 @@ function tick(frame) {
   // 3. Panel background
   ab.fill_rect(GAME_W, 0, W - GAME_W, H, ab.rgb(20, 22, 34));
 
-  // 4. Text. ab.print uses the TrueType font (anti-aliased, any size);
+  // 4. Text. ab.draw_text uses the TrueType font (anti-aliased, any size);
   //    ab.text is a built-in 3x5 bitmap font -- fine for debug, not for UI.
   if (font) {
-    ab.print(font, 'ACTIVE BEZEL', PANEL_X, 80, 44, ab.rgb(235, 238, 250));
+    ab.draw_text(font, 'ACTIVE BEZEL', PANEL_X, 80, 44, ab.rgb(235, 238, 250));
     const label = `${ab.delta_ms().toFixed(1)} ms`;
     const w = ab.measure(font, label, 28);
-    ab.print(font, label, PANEL_X + PANEL_W - w, 130, 28, ab.rgb(150, 160, 190));
+    ab.draw_text(font, label, PANEL_X + PANEL_W - w, 130, 28, ab.rgb(150, 160, 190));
   } else {
     ab.text('ACTIVE BEZEL', PANEL_X, 80, 40, ab.rgb(235, 238, 250));
   }
@@ -98,7 +98,7 @@ function tick(frame) {
     const b = ab.read_u8(ram, 0);
     ab.fill_rect(PANEL_X, 180, PANEL_W * (b / 255), 24, ab.rgb(120, 200, 255));
     if (font) {
-      ab.print(font, `ram[0] = 0x${b.toString(16).padStart(2, '0').toUpperCase()}`,
+      ab.draw_text(font, `ram[0] = 0x${b.toString(16).padStart(2, '0').toUpperCase()}`,
                PANEL_X, 240, 26, ab.rgb(150, 160, 190));
     }
   }

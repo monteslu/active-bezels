@@ -1,0 +1,19 @@
+{
+  "format": "active-bezel",
+  "formatVersion": 1,
+  "id": "example.lua-native",
+  "name": "Lua Native Starter (example)",
+  "version": "1.0.0",
+  "author": "active-bezels",
+  "description": "The whole ab API from Lua with no compiler in the loop: shapes, the live game, TrueType text, an image, and a GLSL effect.",
+  "license": "MIT",
+  "entry": "main.wasm",
+  "runtime": {
+    "abi": "active-bezel-1",
+    "renderer": "gpu-command-v1",
+    "internalResolution": [1920, 1080],
+    "extensions": []
+  },
+  "universal": true,
+  "requires": []
+}

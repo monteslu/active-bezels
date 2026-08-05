@@ -36,6 +36,12 @@
 #include "../common/ab_batteries.h"
 #include "../../sdk/active_bezel.h"
 
+/* The platform redraw profiles (`nes`/`gb`/`md`/`snes`/`msx`/`pce`).
+ * All logic lives in runtimes/common/ab_profiles.c, shared with the other
+ * three runtimes; ab_profiles_py.c is marshaling only. */
+void ab_profiles_py_register(void);
+void ab_profiles_py_shutdown(void);
+
 /* ---------------------------------------------------------------- state -- */
 
 /* The GC heap.
@@ -807,6 +813,10 @@ static void boot(void) {
   }
   mp_store_global(q("ab"), ab_mod);
 
+  /* Platform redraw profiles: registers the nes/gb/md/snes/msx/pce modules
+   * and injects them as globals, the same convenience `ab` gets. */
+  ab_profiles_py_register();
+
   g_script_globals = mp_globals_get();
   load_script();
 }
@@ -855,6 +865,7 @@ AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {
   if (g_booted) { mp_deinit(); g_booted = 0; }
   ab_bat_shutdown();
+  ab_profiles_py_shutdown();
 }
 
 /* --------------------------------------------------- MicroPython plumbing -- */

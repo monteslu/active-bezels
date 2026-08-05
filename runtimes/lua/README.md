@@ -92,7 +92,7 @@ Colours are packed `0xRRGGBBAA`; `ab.rgb(r, g, b[, a])` builds one.
 | **the game** | `draw_game` `draw_game_fit` `game_width` `game_height` `game_pixel` |
 | **transform** | `push_transform` `pop_transform` `reset_transform` `translate` `scale` `rotate` `skew` `transform2d` |
 | **textures** | `texture_create` `texture_destroy` `draw_texture` `draw_texture_rect` `image` `image_data` |
-| **text** | `font` `print` `measure` `font_metrics` |
+| **text** | `font` `draw_text` `measure` `font_metrics` |
 | **perspective** | `quad` |
 | **surfaces** | `surface_create` `surface_target` `surface_end` `surface_filter` `surface_preset` |
 | **shaders** | `effect_set` `effect_clear` |
@@ -124,8 +124,125 @@ ab.quad({ {x=100,y=0}, {x=300,y=20}, {x=320,y=200}, {x=80,y=180} }, img.texture)
 `ab.region(name)` returns `nil` when the platform has no such region, so guard
 it.
 
-TrueType text is `ab.print`, matching Lua's own naming. `ab.text` is the
-built-in 3×5 bitmap font — fine for debug, not for UI.
+TrueType text is `ab.draw_text` (same name in all four runtimes). `ab.text`
+is the built-in 3×5 bitmap font — fine for debug, not for UI.
+
+## Platform redraw profiles
+
+Every runtime exposes one global per supported platform: `nes`, `gb`, `md`,
+`snes`, `msx`, `pce` (Ruby spells them `NES`..`PCE`). Each is a **redraw
+profile**: instead of sampling the core's framebuffer with `ab.draw_game`,
+it re-renders the game picture from the machine's live memory regions (VRAM,
+registers, palettes, per-scanline records) through the same draw-command
+batch every other `ab.*` call uses. The renderers and all orchestration are
+one shared C core (`../common/ab_profiles.c`) linked into all four runtimes;
+the per-language bindings are marshaling only, so the same call produces the
+same pixels in every language. This section is the canonical API reference;
+the other runtimes' READMEs list only their language-shaped differences. A
+pure-C guest can skip the interpreter entirely and call the same core
+through `../common/ab_profiles.h` -- see the main README's "With a compiler"
+section.
+
+Why bother, when `draw_game` already shows the picture? Because a redraw is a
+*scene*, not a bitmap: the bezel can substitute sprite art, restyle layers,
+extend the playfield, or draw the world at a different scale, while everything
+it does not touch stays **pixel-identical to the emulator** on real games.
+That exactness is measured, not assumed: each profile is scored composite vs
+core, pixel for pixel, across a real-cart corpus, and the test suite carries a
+must-fail control for every rule the renderers encode
+([`common/tests/run.sh`](../common/tests/run.sh), 22 controls).
+
+```lua
+function tick(frame)
+  ab.clear(ab.rgb(10, 10, 14))
+  local r = msx.bind()          -- once; finds the regions, allocates buffers
+  local res = msx.draw({ x = 240, y = 60, scale = 4 })
+  -- res.quads, res.mode, res.width (272 or 544 on MSX),
+  -- res.per_line     -- true when per-scanline records drove the frame
+  -- res.vram_replay  -- true when the VRAM write log replayed mid-frame writes
+  -- res.retained     -- true when fossil rows came from the core snapshot
+end
+```
+
+### The five sprite profiles
+
+`nes`, `gb`, `md`, `msx` and `pce` share one surface:
+
+| call | what |
+| --- | --- |
+| `bind()` | resolve regions + allocate, once; `true`, or `nil` + reason |
+| `draw{x=, y=, scale=, ...}` | draw the frame; returns the counters below |
+| `replace_sprite{...}` | register HD sprite substitution; returns a rule id |
+| `remove_replacement(id)`, `clear_replacements()` | manage rules |
+| `sprite_bounds()` | live screen bounds of the matched metasprite, or `nil` |
+
+`replace_sprite` takes `tiles` (the sprite tile ids to substitute -- the key
+is `patterns` on PCE, with `tiles` accepted as a ported-bezel alias), `image`
+(the value `ab.image()` returns), optional `anchor_exclude` (tiles that are
+suppressed but must not stretch the art -- shadow/filler tiles), and
+`base_w` / `base_h` / `ring` (the footprint the art was cut for, plus its
+transparent overhang in source pixels).
+
+Draw options and results per platform:
+
+- `nes.draw{x, y, scale}` ->
+  `{bg_quads, spr_quads, hd_drawn, sprites_replaced}`
+- `gb.draw{x, y, scale}` -> the same shape as NES
+- `md.draw{x, y, scale}` -> `{quads, hd_drawn, sprites_replaced}`
+  (Genesis, SMS and Game Gear all bind through this one profile)
+- `msx.draw{x, y, scale, fit_width=}` -> `{quads, hd_drawn,
+  sprites_replaced, supported, mode, width, per_line, vram_replay,
+  retained}`. `supported = false` means the screen mode is not implemented
+  and NOTHING was drawn -- branch on it rather than trusting a blank.
+  `fit_width` squeezes the 512-wide SCREEN 6/7 modes into the narrow-mode
+  footprint. Extras: `msx.mode()` -> mode, description (or `nil` + reason
+  when unsupported) and `msx.sprites()` -> array of
+  `{index, x, y, pattern, colour}`.
+- `pce.draw{x, y, scale, height=, bg=, sprites=, fb_width=}` ->
+  `{quads, hd_drawn, sprites_replaced, width, height}`. Pass `height` (the
+  VDC registers cannot say how many lines were captured; default 224) and
+  `fb_width` = the CORE's framebuffer width from `ab.game_width()` -- the
+  VDC's display window is not the frame, and on clipped-window games the
+  two disagree. `bg` / `sprites` force a layer on or off. Extra:
+  `pce.geometry()` ->
+  `{width, bg, sprites, bat_w, bat_h, scroll_x, scroll_y}`.
+
+### The SNES profile
+
+`snes` has its own shape -- Mode 7 HD re-projection rather than sprite
+substitution:
+
+- `snes.bind()` -> `true`, or `nil` + reason
+- `snes.frame_size()` -> width, lines (or `nil`) -- geometry without drawing
+- `snes.draw{x, y, scale}` -> `{w, h, quads}` or `nil` -- FAITHFUL
+  reconstruction from the capture, no re-projection, no substitution; this
+  is the corpus-certification path
+- `snes.set_hd_tiles(blob)` -> indexed_count, rgba_count -- loads a
+  tiles.bin v2 painted-tile blob for the re-projection
+- `snes.tick{compare=}` -> `nil` (hi-res / no frame yet), `{}` (no Mode 7
+  span this frame; the plain frame was drawn), or
+  `{w, h, m7start, m7stop, plane_rebuilt}` -- the whole HD Mode 7 tick:
+  streaming plane texture, palette animation, per-line UV mesh, sprite
+  runs, and the optional side-by-side compare view
+
+**The silent-fallback trap.** The profiles consume OPTIONAL per-line regions
+from the core (per-scanline register records, VRAM/palette write logs,
+resolved line buffers). When a region is missing, a profile falls back to the
+end-of-frame snapshot with **no error anywhere**: the picture still draws,
+just measurably worse on games that change state mid-frame. The result flags
+above exist so a bezel (or a test) can assert on the path it got instead of
+silently shipping the degraded one. `msx.draw` in particular reads:
+
+| region | what it adds |
+| --- | --- |
+| `msx_vdp_reglines` | per-scanline registers + palette: raster splits |
+| `msx_vram_deltas` | dot-stamped VRAM/reg/palette write log: mid-frame and mid-LINE rewrites |
+| `msx_fb_tail` | the core's own snapshot of rows the frame never re-rendered (no state-only renderer can produce them) |
+
+and `pce.draw` reads `pce_vdc_reglines`, `pce_vce_pallines`,
+`pce_vdc_linepix`, `pce_vce_xofflines`, `pce_vce_srclines` and
+`pce_paldeltas` (dot-stamped palette writes: mid-line recolours split the row
+at the recorded pixel).
 
 ## Shader presets
 

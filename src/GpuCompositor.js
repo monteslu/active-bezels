@@ -27,6 +27,20 @@ import { decodeImageFile } from './decodeImage.js';
  */
 let gl = null;
 
+/*
+ * A host may INJECT its own already-loaded native-gles instead of letting this
+ * package resolve one. That matters when this package is consumed through a
+ * SYMLINK (npm `file:` dep / `npm link`): createRequire() below resolves from
+ * THIS FILE's location, so it finds the linked package's OWN
+ * node_modules/native-gles and the process ends up with TWO copies of the
+ * native addon -- two GL/EGL initialisations in one process, which does not
+ * work. Injection lets retroemu/romdev/romdeck hand over the single instance
+ * they already hold.
+ */
+export function setGlModule(mod) {
+  gl = mod?.default ?? mod ?? null;
+}
+
 function requireGl() {
   if (gl) return gl;
   const req = createRequire(import.meta.url);
@@ -214,7 +228,9 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       return compositor;
     } catch (err) {
       compositor.destroy();
-      process.env.RETROEMU_DEBUG && console.error(`[active-bezel] GPU fallback: ${err.message}`);
+      /* ALWAYS loud: a silent CPU fallback hid a MODULE_NOT_FOUND for months.
+       * CPU rendering is a choice a human makes, never a quiet degradation. */
+      console.error(`[active-bezel] GPU compositor unavailable, falling back to CPU: ${err.message}`);
       return null;
     }
   }
@@ -225,10 +241,29 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     this.gpuTextures = new Map();
   }
 
-  init() {
-    if (!gl.createContext(this.outputWidth, this.outputHeight)) throw new Error('no OpenGL ES context');
-    this.contextOwned = true;
+  init(skipContext = false) {
+    if (!skipContext) {
+      if (!gl.createContext(this.outputWidth, this.outputHeight)) throw new Error('no OpenGL ES context');
+      this.contextOwned = true;
+    }
     gl.makeCurrent?.();
+    /* Upload guard: glTexImage2D reads width*height*4 bytes from the source
+     * unconditionally (Mesa memcpy). A short buffer is an out-of-bounds READ
+     * and a driver-level SIGSEGV that no JS try/catch sees -- turn it into a
+     * loud, survivable error instead. Guards RGBA/UNSIGNED_BYTE uploads only
+     * (0x1908/0x1401); other formats pass through untouched. */
+    if (!gl.__texImageGuard) {
+      const orig = gl.glTexImage2D.bind(gl);
+      gl.glTexImage2D = (target, level, ifmt, w, h, border, fmt, type, data) => {
+        if (data && typeof data.length === 'number' && fmt === 0x1908 && type === 0x1401
+            && data.length < w * h * 4) {
+          console.error(`[active-bezel] glTexImage2D SHORT BUFFER blocked: ${w}x${h} needs ${w * h * 4} bytes, got ${data.length}`);
+          return undefined;
+        }
+        return orig(target, level, ifmt, w, h, border, fmt, type, data);
+      };
+      gl.__texImageGuard = true;
+    }
     this.colorProgram = program(`#version 300 es
       precision mediump float;
       uniform vec4 u_color;
@@ -247,6 +282,89 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       out vec4 out_color;
       /* texture * vertex colour: same modulation as the CPU rasteriser. */
       void main() { out_color = texture(u_texture, v_uv) * v_color; }`);
+    /* Catmull-Rom bicubic via 4 bilinear taps (the standard trick: with the
+     * sampler in LINEAR mode, one tap at a weighted offset integrates a 2x2
+     * footprint, so 4 taps cover the 4x4 kernel). Used for textures flagged
+     * filter=bicubic -- the Mode 7 plane re-projection wants smooth
+     * high-resolution sampling, not NEAREST blockiness. */
+    this.meshBicubicProgram = programVC(`#version 300 es
+      precision highp float;
+      uniform sampler2D u_texture;
+      uniform vec2 u_texel;     /* 1/width, 1/height */
+      in vec2 v_uv;
+      in vec4 v_color;
+      out vec4 out_color;
+      vec4 cubicWeights(float t) {
+        float t2 = t * t, t3 = t2 * t;
+        return vec4(-0.5*t3 + t2 - 0.5*t,
+                     1.5*t3 - 2.5*t2 + 1.0,
+                    -1.5*t3 + 2.0*t2 + 0.5*t,
+                     0.5*t3 - 0.5*t2);
+      }
+      void main() {
+        vec2 pos = v_uv / u_texel - 0.5;
+        vec2 base = floor(pos);
+        vec2 f = pos - base;
+        vec4 wx = cubicWeights(f.x);
+        vec4 wy = cubicWeights(f.y);
+        /* collapse each pair of adjacent taps into one bilinear fetch */
+        vec2 sx = vec2(wx.x + wx.y, wx.z + wx.w);
+        vec2 ox = vec2(base.x - 0.5 + wx.y / sx.x, base.x + 1.5 + wx.w / sx.y);
+        vec2 sy = vec2(wy.x + wy.y, wy.z + wy.w);
+        vec2 oy = vec2(base.y - 0.5 + wy.y / sy.x, base.y + 1.5 + wy.w / sy.y);
+        vec4 c = sx.x * (sy.x * texture(u_texture, vec2(ox.x, oy.x) * u_texel)
+                       + sy.y * texture(u_texture, vec2(ox.x, oy.y) * u_texel))
+               + sx.y * (sy.x * texture(u_texture, vec2(ox.y, oy.x) * u_texel)
+                       + sy.y * texture(u_texture, vec2(ox.y, oy.y) * u_texel));
+        out_color = c * v_color;
+      }`);
+    /* Palette-indexed bicubic: u_texture's RED channel holds a palette
+     * index (i/255); u_palette is a 256x1 RGBA lookup. Indices cannot be
+     * interpolated, so this does the full 4x4 Catmull-Rom with 16 NEAREST
+     * fetches, resolving each through the palette BEFORE weighting. Built
+     * for live palette animation (Mode 7 planes): the index plane is
+     * static while the 1KB palette texture updates every frame. */
+    this.meshPalBicubicProgram = programVC(`#version 300 es
+      precision highp float;
+      uniform sampler2D u_texture;
+      uniform sampler2D u_palette;
+      uniform vec2 u_texel;     /* 1/width, 1/height */
+      in vec2 v_uv;
+      in vec4 v_color;
+      out vec4 out_color;
+      vec4 cubicWeights(float t) {
+        float t2 = t * t, t3 = t2 * t;
+        return vec4(-0.5*t3 + t2 - 0.5*t,
+                     1.5*t3 - 2.5*t2 + 1.0,
+                    -1.5*t3 + 2.0*t2 + 0.5*t,
+                     0.5*t3 - 0.5*t2);
+      }
+      /* The index texture's ALPHA gates each texel (0 = unpainted hole in
+       * an overlay plane; 255 = opaque). Multiplying the resolved palette
+       * color by it lets palette-indexed OVERLAYS blend over the base
+       * plane with smooth bicubic edges; full planes carry A=255. */
+      vec4 pal(vec2 tc) {
+        vec4 s = texture(u_texture, tc);
+        return texture(u_palette, vec2(s.r * (255.0/256.0) + (0.5/256.0), 0.5)) * s.a;
+      }
+      void main() {
+        vec2 pos = v_uv / u_texel - 0.5;
+        vec2 base = floor(pos);
+        vec2 f = pos - base;
+        vec4 wx = cubicWeights(f.x);
+        vec4 wy = cubicWeights(f.y);
+        vec4 c = vec4(0.0);
+        for (int j = 0; j < 4; j++) {
+          vec4 rowc = vec4(0.0);
+          float ty = (base.y + float(j) - 1.0 + 0.5) * u_texel.y;
+          for (int i = 0; i < 4; i++) {
+            float tx = (base.x + float(i) - 1.0 + 0.5) * u_texel.x;
+            rowc += wx[i] * pal(vec2(tx, ty));
+          }
+          c += wy[j] * rowc;
+        }
+        out_color = c * v_color;
+      }`);
     this.textureProgram = program(`#version 300 es
       precision mediump float;
       uniform sampler2D u_texture;
@@ -630,9 +748,79 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     return handle;
   }
 
+  /*
+   * GL-DIRECT PRESENT (the one-GL-stack design monteslu called for).
+   *
+   * Rebind the process's single native-gles context onto the playtest
+   * window's native handle (EGL window surface; X11/XWayland via the
+   * $DISPLAY platform patch in native-gles). The scene keeps rendering
+   * offscreen into sceneFbo at logical resolution; presentWindow() then
+   * GPU-blits it to the window backbuffer at ANY window size and swaps.
+   * No readback, no SDL renderer, no CPU scale path -- a resize just
+   * changes the blit rectangle.
+   *
+   * Texture handles survive migration: this.textures retains CPU pixels,
+   * so every persistent texture re-uploads into the new context under its
+   * EXISTING handle -- guests (including C profiles caching handles in
+   * wasm state) never notice.
+   */
+  migrateToWindow(nativeHandle) {
+    if (!this.gpuReady || !nativeHandle) return 0;
+    try {
+      gl.makeCurrent?.();
+      gl.glFinish?.();
+      gl.destroyContext();
+      if (!gl.createContext(this.outputWidth, this.outputHeight,
+        { windowSurface: true, nativeWindow: nativeHandle })) {
+        /* window bind failed: restore a headless context and carry on */
+        gl.createContext(this.outputWidth, this.outputHeight);
+        this.gpuReady = false;
+        this.gpuTextures = new Map();
+        this.init(true);
+        for (const handle of this.textures.keys()) this._uploadPersistent(handle);
+        return 0;
+      }
+      gl.setSwapInterval?.(0);   /* the host loop paces; never block on vsync */
+      this.windowMode = true;
+      this.gpuReady = false;     /* init(true) flips it back on */
+      this.gpuTextures = new Map();
+      this.init(true);
+      for (const handle of this.textures.keys()) this._uploadPersistent(handle);
+      return 1;
+    } catch (err) {
+      console.error(`[active-bezel] migrateToWindow failed: ${err.message}`);
+      return 0;
+    }
+  }
+
+  /* Blit the composed scene to the window backbuffer (letterboxed) and swap. */
+  presentWindow(dstX, dstY, dstW, dstH, winW, winH) {
+    if (!this.windowMode || !this.gpuReady) return 0;
+    gl.makeCurrent?.();
+    gl.glBindFramebuffer(0x8ca9 /* DRAW_FRAMEBUFFER */, 0);
+    gl.glViewport(0, 0, winW, winH);
+    gl.glDisable(C.SCISSOR_TEST);
+    gl.glClearColor(0, 0, 0, 1);
+    gl.glClear(C.COLOR_BUFFER_BIT);
+    gl.glBindFramebuffer(0x8ca8 /* READ_FRAMEBUFFER */, this.sceneFbo);
+    /* window GL coords are bottom-up; letterbox rects are top-down */
+    const gy = winH - dstY - dstH;
+    gl.glBlitFramebuffer(0, 0, this.outputWidth, this.outputHeight,
+      dstX, gy, dstX + dstW, gy + dstH, C.COLOR_BUFFER_BIT, C.LINEAR);
+    gl.swapBuffers();
+    return 1;
+  }
+
   _uploadPersistent(handle) {
     const texture = this.textures.get(handle);
     if (!texture) return;
+    /* createTexture is called from the guest's TICK (the ab_host import
+     * runs synchronously), not from compose() -- so the compositor's EGL
+     * context is NOT guaranteed current here. With a playtest window open,
+     * the SDL window's GL context is current on this thread between
+     * composes, and uploading into it segfaults in the driver (Mesa memcpy
+     * via glTexImage2D). Assert our context before ANY GL work. */
+    gl.makeCurrent?.();
     const id = this._newTexture();
     gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.NEAREST);
     gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.NEAREST);
@@ -641,9 +829,28 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     this.gpuTextures.set(handle, id);
   }
 
+  updateTexture(handle, x, y, w, h, pixels) {
+    const ok = super.updateTexture(handle, x, y, w, h, pixels);
+    if (!ok) return 0;
+    const id = this.gpuTextures.get(handle);
+    if (id && this.gpuReady) {
+      /* Tick-time GL, same as _uploadPersistent: assert our context. */
+      gl.makeCurrent?.();
+      gl.glActiveTexture(C.TEXTURE0);
+      gl.glBindTexture(C.TEXTURE_2D, id);
+      gl.glTexSubImage2D(C.TEXTURE_2D, 0, x, y, w, h,
+        C.RGBA, C.UNSIGNED_BYTE, pixels.subarray(0, w * h * 4));
+    }
+    return 1;
+  }
+
   destroyTexture(handle) {
     const id = this.gpuTextures.get(handle);
-    if (id) gl.glDeleteTextures(1, new Uint32Array([id]));
+    /* Same tick-time hazard as _uploadPersistent: assert our context. */
+    if (id) {
+      gl.makeCurrent?.();
+      gl.glDeleteTextures(1, new Uint32Array([id]));
+    }
     this.gpuTextures.delete(handle);
     return super.destroyTexture(handle);
   }
@@ -717,8 +924,45 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     if (id) {
       gl.glActiveTexture(C.TEXTURE0);
       gl.glBindTexture(C.TEXTURE_2D, id);
-      this._geometryVC(this.meshTextureProgram, verts);
-      gl.glUniform1i(gl.glGetUniformLocation(this.meshTextureProgram, 'u_texture'), 0);
+      /* Per-texture sampling mode (set via texture_filter): bicubic runs
+       * its own program with the sampler in LINEAR (the 4-tap trick needs
+       * hardware bilinear); linear just flips the params; default NEAREST.
+       * Bit 4 (+16) selects REPEAT wrap — Mode-7-style planes tile their
+       * map, while atlas textures must stay clamped or bilinear bleeds the
+       * opposite edge in. */
+      const mode = this.textureFilters?.get(command.handle) ?? 0;
+      const filter = mode & 15;
+      const wrap = (mode & 16) ? C.REPEAT : C.CLAMP_TO_EDGE;
+      /* filter 3 (palette-indexed) fetches raw indices: NEAREST only */
+      const glFilter = (filter === 1 || filter === 2) ? C.LINEAR : C.NEAREST;
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, glFilter);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, glFilter);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_WRAP_S, wrap);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_WRAP_T, wrap);
+      const palHandle = filter === 3 ? this.texturePalettes?.get(command.handle) : null;
+      const palId = palHandle ? this.gpuTextures.get(palHandle) : null;
+      if (filter === 3 && palId) {
+        const texture = this.textures.get(command.handle);
+        gl.glActiveTexture(C.TEXTURE0 + 1);
+        gl.glBindTexture(C.TEXTURE_2D, palId);
+        gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.NEAREST);
+        gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.NEAREST);
+        gl.glActiveTexture(C.TEXTURE0);
+        this._geometryVC(this.meshPalBicubicProgram, verts);
+        gl.glUniform1i(gl.glGetUniformLocation(this.meshPalBicubicProgram, 'u_texture'), 0);
+        gl.glUniform1i(gl.glGetUniformLocation(this.meshPalBicubicProgram, 'u_palette'), 1);
+        gl.glUniform2f(gl.glGetUniformLocation(this.meshPalBicubicProgram, 'u_texel'),
+          1 / (texture?.width || 1), 1 / (texture?.height || 1));
+      } else if (filter === 2) {
+        const texture = this.textures.get(command.handle);
+        this._geometryVC(this.meshBicubicProgram, verts);
+        gl.glUniform1i(gl.glGetUniformLocation(this.meshBicubicProgram, 'u_texture'), 0);
+        gl.glUniform2f(gl.glGetUniformLocation(this.meshBicubicProgram, 'u_texel'),
+          1 / (texture?.width || 1), 1 / (texture?.height || 1));
+      } else {
+        this._geometryVC(this.meshTextureProgram, verts);
+        gl.glUniform1i(gl.glGetUniformLocation(this.meshTextureProgram, 'u_texture'), 0);
+      }
     } else {
       this._geometryVC(this.meshProgram, verts);
     }
@@ -822,7 +1066,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
      * shader has something to sample; otherwise draw straight to the default
      * framebuffer as before. Binding this per frame (rather than once at init)
      * keeps effect-on and effect-off frames correct when a guest toggles one. */
-    gl.glBindFramebuffer(C.FRAMEBUFFER, this.effect ? this.sceneFbo : 0);
+    gl.glBindFramebuffer(C.FRAMEBUFFER, (this.effect || this.windowMode) ? this.sceneFbo : 0);
     gl.glViewport(0, 0, this.outputWidth, this.outputHeight);
     const [r, g, b, a] = rgba(this.clearColor);
     gl.glClearColor(r, g, b, a);
@@ -839,7 +1083,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
         gl.glBindFramebuffer(C.FRAMEBUFFER, top.fbo);
         gl.glViewport(0, 0, top.width, top.height);
       } else {
-        gl.glBindFramebuffer(C.FRAMEBUFFER, this.effect ? this.sceneFbo : 0);
+        gl.glBindFramebuffer(C.FRAMEBUFFER, (this.effect || this.windowMode) ? this.sceneFbo : 0);
         gl.glViewport(0, 0, this.outputWidth, this.outputHeight);
       }
     };
@@ -943,6 +1187,19 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       gl.glDrawArrays(C.TRIANGLES, 0, 6);
       gl.glEnable(C.BLEND);
     }
+    if (this.windowMode) {
+      /* GL-present mode: the pixels are consumed on the GPU (presentWindow
+       * blits sceneFbo to the window), so the per-frame glFinish +
+       * glReadPixels + row flip (~14ms for 1080p) is pure waste. Return the
+       * LAST read-back frame marked stale; screenshot consumers refresh via
+       * readbackScene(). */
+      return { rgba: this.output, width: this.outputWidth, height: this.outputHeight, stale: true };
+    }
+    this._readbackInto();
+    return { rgba: this.output, width: this.outputWidth, height: this.outputHeight };
+  }
+
+  _readbackInto() {
     gl.glFinish();
     gl.glReadPixels(0, 0, this.outputWidth, this.outputHeight, C.RGBA, C.UNSIGNED_BYTE, this.readback);
     const row = this.outputWidth * 4;
@@ -950,6 +1207,21 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       this.output.set(this.readback.subarray((this.outputHeight - y - 1) * row, (this.outputHeight - y) * row), y * row);
     }
     for (let i = 3; i < this.output.length; i += 4) this.output[i] = 255;
+  }
+
+  /* Fresh CPU pixels of the composed scene, on demand (screenshots, the
+   * livestream). In window mode the scene lives in sceneFbo. */
+  readbackScene() {
+    if (!this.gpuReady) {
+      return { rgba: this.output, width: this.outputWidth, height: this.outputHeight };
+    }
+    gl.makeCurrent?.();
+    gl.glBindFramebuffer(0x8ca8 /* READ_FRAMEBUFFER */,
+      (this.windowMode || this.effect) ? this.sceneFbo : 0);
+    if (this.output.buffer.byteLength === 0) {
+      this.output = new Uint8ClampedArray(this.outputWidth * this.outputHeight * 4);
+    }
+    this._readbackInto();
     return { rgba: this.output, width: this.outputWidth, height: this.outputHeight };
   }
 

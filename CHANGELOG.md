@@ -1,5 +1,118 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- **Platform redraw profiles in all four runtimes.** The `nes`, `gb`, `md`,
+  `snes`, `msx` and `pce` globals — previously Lua-only — are now exposed by
+  the Python, JavaScript and Ruby runtimes too (Ruby spells them
+  `NES`..`PCE`, as constants must be). All orchestration moved from the Lua
+  binding into a language-neutral core, `runtimes/common/ab_profiles.{h,c}`,
+  linked into every runtime; the per-language files
+  (`ab_profiles_lua.c` / `_py.c` / `_js.c` / `_rb.c`) are marshaling only,
+  so the four runtimes are pixel-identical by construction. Verified with a
+  cross-runtime parity harness: one synthetic core, the identical call
+  sequence in all four languages, byte-identical composed frames — and the
+  pre-refactor Lua runtime (the corpus-certification build) produces the
+  same frame, so the extraction is behaviour-preserving. Spot-checked live
+  through the MCP host as well: two real carts per platform per language
+  (48 scored runs), every one composite-vs-core 100.000% exact.
+  Language-shaped differences (option dicts/objects/Hashes, raise-vs-nil
+  error idioms, tuple/object/Array multi-returns) are listed in each
+  runtime's README. A pure-C guest can link the same core directly (compile
+  `ab_profiles.c` + the renderers into the module and call the `ab_prof_*`
+  API); verified the same way, 100.000% exact on real carts at ~15 KB of
+  wasm.
+
+- **MSX redraw profile** (`msx` global in the Lua runtime, `ab_msx.{c,h}`):
+  pixel-exact reconstruction of the V99x8 modes (SCREEN 0-8, including the
+  512-wide SCREEN 6/7 and interleaved SCREEN 7/8 VRAM), TMS and V9938 sprite
+  planes with the emulator's one-line sprite-buffer delay, colour-0 backdrop
+  and per-register palettes. Verified against a real-cart corpus: every
+  renderable cart scores 100.000% composite-vs-core through the bezel path.
+- **MSX per-scanline machinery**, consumed with strict validity gates and
+  silent-fallback protection:
+  - `msx_vdp_reglines` (per-line registers + palette: raster splits),
+  - `msx_vram_deltas` (dot-stamped VRAM/register/palette write log with old
+    AND new values; undo/redo replay reconstructs what each line rendered
+    from, and same-line events split the row at the recorded 8px block),
+  - `msx_fb_tail` (the core's own snapshot of rows the frame never
+    re-rendered, captured at the end of `retro_run`). Rows past the
+    frame-end cut are retained framebuffer memory that no state-only
+    renderer can produce; a caller-side prior-composite fallback exists for
+    per-frame composers, but live bezel ticks fire per COMPOSE, so the core
+    snapshot is the only live-correct source.
+  - Sub-line sprite fill points are honoured: V9938 modes latch the next
+    line's sprites at block 24, TMS modes at block 33, and write-log events
+    stamped at or past the fill point are excluded from the next row's
+    sprite evaluation.
+- **PCE mid-line palette splits** (`pce_paldeltas`): a dot-stamped VCE
+  colour-table write log (old and new values per write). `pce.draw` and the
+  scoring harness undo a row's events to reach its line-start table and
+  re-apply them at the recorded pixel, closing the last sub-scanline class
+  on the PCE corpus (270/270 renderable carts exact).
+- Region table entries for `msx_vdp_reglines` (0x1c6), `msx_vram_deltas`
+  (0x1c7), `msx_fb_tail` (0x1c8) and `pce_paldeltas` (0x1ab), with comments
+  documenting the silent-fallback trap each one guards against.
+- `msx.draw` result flags `per_line`, `vram_replay` and `retained`, so a
+  bezel or a test can assert which rendering path actually ran.
+- The suite now carries 22 must-fail controls
+  (`runtimes/common/tests/run.sh`): every per-line/replay/retention/split
+  rule fails the suite when disabled.
+
+- **`region_read` host import**: bulk-copy a region span straight into guest
+  memory, one host crossing per region instead of one per byte (a C guest
+  snapshotting the NES resolved planes made 122,880 `region_read_u8` calls a
+  frame; this collapses that to two). Hosts predating the import resolve it
+  to a stub returning 0, so callers must keep the `region_read_u8` fallback;
+  `ab_region_slurp` in `runtimes/common/ab_render.c` is the canonical shape.
+- **Texture ABI**: `texture_filter` (0 nearest, 1 linear, 2 bicubic,
+  3 palette-indexed bicubic, +16 REPEAT wrap; the CPU backend stays nearest
+  by documented divergence), `texture_palette` (bind a 256x1 RGBA palette to
+  an index texture so static planes animate through a 1KB palette upload),
+  and `texture_update` (patch a sub-rectangle of a persistent texture in
+  place, for streaming tilemaps that would otherwise re-upload whole planes).
+- **GL-direct window presentation** on the GPU compositor:
+  `migrateToWindow(nativeHandle)` and
+  `presentWindow(dstX, dstY, dstW, dstH, winW, winH)`. Host-neutral by
+  contract (see `docs/ACTIVE_BEZELS.md`): `migrateToWindow` returning 0 means
+  the host keeps its own present path.
+- **`setGlModule(mod)`** export: a host injects its already-loaded
+  `native-gles` instance so a symlinked copy of this package can never load
+  a second native addon (two GL contexts in one process hang silently).
+- Snapshot-backed regions (NES CHR / APU / CPU regs) refresh at the top of
+  every tick, so a guest reading them per frame sees current data instead of
+  the boot-time buffer.
+
+- `docs/HD_TEXT.md`: recipe for replacing a game's 8x8 font tiles
+  with real letterforms, one glyph per tile cell. Needs no runtime
+  support beyond `ab.draw_text` and a font asset.
+- `examples/hd-text/`: worked bezel plus `tools/make_tile_font.py`,
+  which bakes the horizontal stretch the technique depends on.
+
+### Changed
+
+- TTF drawing is `draw_text` in every runtime; the `print` alias is gone
+  from Lua, JavaScript and Ruby. One name that is safe in all four beats a
+  name needing a per-language footnote — Ruby's bare `print(...)` reaches
+  `Kernel#print` and Python's shadows the builtin. All call sites in this
+  repo were converted.
+- `native-gles` moved from a hard dependency to an optional peer dependency
+  (plus a devDependency for this repo's own tests). Hosts that present on
+  the GPU either inject their instance via `setGlModule` or depend on
+  `native-gles` themselves; pure-CPU embedders no longer install a native
+  addon at all.
+
+### Documented
+
+- `docs/ACTIVE_BEZELS.md`: presentation is host-neutral **by contract**.
+  The window-presentation API takes an opaque native handle and pure
+  geometry, and `migrateToWindow` returning `0` (so the host keeps its own
+  path) is load-bearing for hosts on platforms the GL backend has no
+  branch for. A present implementation may be platform-specific; removing
+  the "unavailable, carry on" answer is a breaking change.
+
 ## 0.5.0
 
 ### Universal packages

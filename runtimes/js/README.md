@@ -98,7 +98,7 @@ spellings work — a literal like `0xff0000ff` and a computed `(r << 24) | ...`
 | **the game** | `draw_game` `draw_game_fit` `game_width` `game_height` `game_pixel` |
 | **transform** | `push_transform` `pop_transform` `reset_transform` `translate` `scale` `rotate` `skew` `transform2d` |
 | **textures** | `texture_create` `texture_destroy` `draw_texture` `draw_texture_rect` `image` `image_data` |
-| **text** | `font` `print` `measure` `font_metrics` |
+| **text** | `font` `draw_text` `measure` `font_metrics` |
 | **perspective** | `quad` |
 | **surfaces** | `surface_create` `surface_target` `surface_end` `surface_filter` `surface_preset` |
 | **shaders** | `effect_set` `effect_clear` |
@@ -121,6 +121,39 @@ the two by changing syntax only. Where JS has a better shape, it wins:
 
 `ab.texture_create(pixels, w, h)` accepts any typed array or `ArrayBuffer` of
 RGBA bytes. `console.log/warn/error/info` are wired to `ab.log`.
+
+## Platform redraw profiles
+
+`nes`, `gb`, `md`, `snes`, `msx` and `pce` are globals, like `ab`. The API
+is documented once, in
+[the Lua README](../lua/README.md#platform-redraw-profiles); the renderers
+are the same shared C core, so only the spelling differs here:
+
+- options are an object: `msx.draw({ x: 240, y: 60, scale: 4 })`
+- configuration failures throw (a missing binding or region set, a
+  malformed `replace_sprite` call); transient conditions return `null`
+  (`draw` on a frame-read failure, `snes.tick` / `snes.draw` before the
+  core has a frame)
+- multi-value returns are objects: `sprite_bounds()` is
+  `{x0, y0, x1, y1}`, `msx.mode()` is `{mode, description}` with `mode`
+  set to `null` when the screen mode is unsupported, `snes.frame_size()`
+  is `{w, h}`, `snes.set_hd_tiles(blob)` is `{indexed, rgba}` and accepts
+  the `Uint8Array` that `ab.asset()` returns
+- draw results are objects with the same keys as the Lua tables
+
+```js
+function init() {
+  nes.bind();
+  const hero = ab.image('assets/hero.png');
+  nes.replace_sprite({ tiles: [0x53, 0x54], image: hero,
+                       base_w: 15, base_h: 16, ring: 4 });
+}
+
+function tick(frame) {
+  ab.clear(ab.rgb(0, 0, 0));
+  const r = nes.draw({ x: 0, y: 92, scale: 4 });
+}
+```
 
 ## Shader presets
 

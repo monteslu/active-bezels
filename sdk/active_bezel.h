@@ -41,6 +41,11 @@ AB_IMPORT("ab_host", "region_size") extern int32_t ab_region_size(int32_t);
 AB_IMPORT("ab_host", "region_flags") extern int32_t ab_region_flags(int32_t);
 AB_IMPORT("ab_host", "region_offset") extern int32_t ab_region_offset(int32_t);
 AB_IMPORT("ab_host", "region_read_u8") extern int32_t ab_region_read_u8(int32_t, int32_t);
+/* Bulk copy a region span straight into guest memory: ONE crossing instead of
+ * one per byte. Returns bytes copied. Hosts predating this import resolve it
+ * to a stub that returns 0, so callers must fall back to region_read_u8 --
+ * see ab_region_slurp in runtimes/common/ab_render.c for the canonical shape. */
+AB_IMPORT("ab_host", "region_read") extern int32_t ab_region_read(int32_t, int32_t, void *, int32_t);
 AB_IMPORT("ab_host", "region_write_u8") extern int32_t ab_region_write_u8(int32_t, int32_t, int32_t);
 AB_IMPORT("ab_host", "config_bool") extern int32_t ab_config_bool_raw(const char *, int32_t);
 AB_IMPORT("ab_host", "config_number") extern double ab_config_number_raw(const char *, int32_t);
@@ -186,6 +191,9 @@ typedef struct {
 AB_IMPORT("ab_host", "command_mesh") extern int32_t ab_mesh(const ab_vertex *, int32_t, int32_t);
 AB_IMPORT("ab_host", "texture_create_rgba") extern int32_t ab_texture_create_rgba(const void *, int32_t, int32_t);
 AB_IMPORT("ab_host", "texture_destroy") extern int32_t ab_texture_destroy(int32_t);
+AB_IMPORT("ab_host", "texture_filter") extern int32_t ab_texture_filter(int32_t, int32_t);
+AB_IMPORT("ab_host", "texture_palette") extern int32_t ab_texture_palette(int32_t, int32_t);
+AB_IMPORT("ab_host", "texture_update") extern int32_t ab_texture_update(int32_t, int32_t, int32_t, int32_t, int32_t, const void *);
 AB_IMPORT("ab_host", "command_draw_texture") extern int32_t ab_draw_texture(int32_t, double, double, double, double);
 /* Draw a SUB-RECTANGLE of a texture: (sx,sy,sw,sh) in texture pixels. Lets a
  * guest keep one atlas and draw entries from it, instead of one texture per

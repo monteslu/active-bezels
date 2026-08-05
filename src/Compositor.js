@@ -624,6 +624,26 @@ export class ActiveBezelCompositor {
     this._push({ kind: 'surface', pixels, width, height, x, y, w, h });
   }
 
+  /* Per-texture sampling: 0 nearest (default), 1 linear, 2 bicubic,
+   * 3 palette-indexed bicubic (needs setTexturePalette). Bit 4 (+16) =
+   * REPEAT wrap. The CPU backend renders NEAREST regardless (documented
+   * divergence: filtering is a GPU nicety); the GPU backend honours it in
+   * the mesh/texture paths. */
+  setTextureFilter(handle, mode) {
+    if (!this.textures.has(handle)) return 0;
+    (this.textureFilters ??= new Map()).set(handle, mode | 0);
+    return 1;
+  }
+
+  /* Associate a 256x1 RGBA palette texture with an index texture whose RED
+   * channel holds i/255. Mode-7-style planes stay static while the 1KB
+   * palette animates every frame. */
+  setTexturePalette(handle, paletteHandle) {
+    if (!this.textures.has(handle) || !this.textures.has(paletteHandle)) return 0;
+    (this.texturePalettes ??= new Map()).set(handle, paletteHandle);
+    return 1;
+  }
+
   createTexture(pixels, width, height) {
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
       || width <= 0 || height <= 0 || width * height > 16_777_216) return 0;
@@ -636,7 +656,31 @@ export class ActiveBezelCompositor {
     return handle;
   }
 
+  /* Patch a sub-rectangle of a persistent texture in place. Exists so
+   * streaming planes (Mode 7 tilemaps) update a few rows per tick instead
+   * of re-creating and re-uploading a 64MB texture. CPU side patches the
+   * stored pixels; the GPU subclass also glTexSubImage2Ds the live GL
+   * texture. */
+  updateTexture(handle, x, y, w, h, pixels) {
+    const texture = this.textures.get(handle);
+    if (!texture) return 0;
+    if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)
+      || !Number.isSafeInteger(w) || !Number.isSafeInteger(h)
+      || x < 0 || y < 0 || w <= 0 || h <= 0
+      || x + w > texture.width || y + h > texture.height
+      || pixels.length < w * h * 4) return 0;
+    for (let row = 0; row < h; row++) {
+      texture.pixels.set(
+        pixels.subarray(row * w * 4, (row + 1) * w * 4),
+        ((y + row) * texture.width + x) * 4,
+      );
+    }
+    return 1;
+  }
+
   destroyTexture(handle) {
+    this.textureFilters?.delete(handle);
+    this.texturePalettes?.delete(handle);
     return this.textures.delete(handle) ? 1 : 0;
   }
 

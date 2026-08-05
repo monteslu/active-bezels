@@ -144,10 +144,41 @@ The bezel decides where the game goes. If it submits no commands at all,
 the host supplies a centered aspect-correct fallback. A guest framebuffer is
 treated as a complete picture, not decoration behind a host-owned layout.
 
+### Presentation is host-neutral by contract
+
+More than one host consumes this runtime, so nothing in the presentation
+path may assume a particular one. Concretely, the compositor's window
+presentation API takes an **opaque native window handle** and **pure
+geometry** — never a host's window object, windowing library, or event
+loop:
+
+```
+compositor.migrateToWindow(nativeHandle)                    -> 0 | 1
+compositor.presentWindow(dstX, dstY, dstW, dstH, winW, winH)
+```
+
+Any host that can produce a native window handle gets GPU-direct
+presentation; a host that cannot, or whose platform the GL backend does
+not yet support, gets `0` from `migrateToWindow` and continues on its own
+path. **That fallback is load-bearing, not a courtesy.** It is what keeps
+hosts working on platforms the current backend has no branch for, so a
+present implementation may be platform-specific but must never remove the
+"unavailable, carry on" answer.
+
+The same rule covers GL ownership: a host that has already loaded
+`native-gles` injects its instance rather than letting this package
+resolve its own (see `index.js`). Two copies of the addon in one process
+means two GL contexts and silent hangs, so injection is the supported
+path for any embedder.
+
+A change that makes presentation depend on a specific host's windowing —
+even one that works today for every current consumer — is a breaking
+change to this contract.
+
 ## ABI
 
-The machine-readable source of truth is `sdk/active-bezel/abi.json`; the C binding is
-`sdk/active-bezel/active_bezel.h`.
+The machine-readable source of truth is `sdk/abi.json`; the C binding is
+`sdk/active_bezel.h`.
 
 Required exports:
 
@@ -194,6 +225,19 @@ Patched core regions use the exact stable IDs already used by Romdev: NES
 nametables/palette/OAM/CHR, GB VRAM/OAM/IO/HRAM, Genesis CRAM/VSRAM/VDP state,
 GBA palette/OAM/IWRAM, and the equivalent regions for every supported classic
 core. `cart_source` is an immutable copy of the loaded ROM.
+
+Beyond the flat state snapshots, cores may expose **per-scanline and
+per-frame recording regions** that make mid-frame behaviour reconstructible:
+per-line register/palette records (`*_reglines`, `pce_vce_pallines`),
+dot-stamped write logs (`msx_vram_deltas`, `pce_paldeltas`), resolved line
+buffers and placement records (`pce_vdc_linepix`, `pce_vce_xofflines`,
+`pce_vce_srclines`), and the core's own snapshot of framebuffer rows the
+current frame never re-rendered (`msx_fb_tail`). These are OPTIONAL: the
+region table in `src/Regions.js` must list an id for a guest to find it, and
+a consumer that cannot find one falls back silently to snapshot-quality
+rendering. The platform redraw profiles in the Lua runtime are the reference
+consumers; their result flags (`per_line`, `vram_replay`, `retained`) exist
+so a test can assert which path actually ran.
 
 When a core exposes its `WebAssembly.Memory`, a guest may import the identical
 object as `ab_core.memory`; no serialized game-state object or full-RAM copy is
@@ -389,6 +433,10 @@ example of each capability (2D shapes, the live game, TrueType and bitmap
 text, a live memory readout, transforms, a decoded PNG, a per-vertex mesh, and
 a gated GLSL effect). Copy it, delete what you do not need.
 
+All four runtimes also carry the platform redraw profiles (`nes`, `gb`,
+`md`, `snes`, `msx`, `pce`; Ruby spells them `NES`..`PCE`); see
+[runtimes/lua/README.md](../runtimes/lua/README.md#platform-redraw-profiles).
+
 ### The script contract
 
 Three functions, only one required. The names are the same in all four
@@ -411,7 +459,7 @@ scissor, scissor_reset, mesh`
 scale, rotate`
 **Textures and images** `texture_create, texture_destroy, draw_texture,
 draw_texture_rect, image, image_data`
-**Text** `font, print`/`draw_text, measure, font_metrics`
+**Text** `font, draw_text, measure, font_metrics`
 **Effects** `effect_set, effect_clear`
 **The machine** `region, region_find_id, region_size, region_flags,
 region_offset, region_generation, region_count, read_u8, write_u8, read,
@@ -425,24 +473,27 @@ Language-shaped differences, all of them deliberate:
 
 | | Lua | Python | JavaScript | Ruby |
 |---|---|---|---|---|
-| TTF draw | `ab.print` | `ab.draw_text` | `ab.print` | `AB.draw_text` |
 | image returns | table | dict | object | Hash |
 | mesh vertex | table | dict or tuple | object | Hash |
 | `read` returns | string | bytes | Uint8Array | String |
 | constants | `ab.BTN.START` | `ab.BTN['START']` | `ab.BTN.START` | `AB::BTN[:START]` |
 | missing region | `nil` | `None` | `null` | `nil` |
+| redraw profiles | `nes`..`pce` | `nes`..`pce` | `nes`..`pce` | `NES`..`PCE` |
+| profile config error | `nil, reason` | raises | throws | raises |
+| `sprite_bounds` | 4 values | tuple | `{x0,y0,x1,y1}` | Array |
 
-Python and Ruby use `draw_text` rather than `print` because both languages
-already have a `print`: in Ruby a bare `print(...)` in a class body would
-silently reach `Kernel#print`, and in Python shadowing the builtin is worse
-than a different name. Ruby also binds `print` as an alias; Python does not.
+TTF drawing is `draw_text` in every runtime. It is deliberately not `print`:
+Ruby would silently reach `Kernel#print` from a bare `print(...)` in a class
+body, and in Python shadowing the builtin is worse than a different name. One
+name that is safe everywhere beats a name that needs a per-language footnote.
 
 Two runtimes add one convenience each on top of the shared surface:
 `ab.loadasset(name)` in Lua compiles an asset as a Lua chunk (modules and data
 without a filesystem), and `ab.asset_text(name)` in JavaScript returns an asset
-as a string rather than a `Uint8Array`. Everything else is identical, and a
-script that sticks to the table above ports between all four languages by
-changing syntax alone.
+as a string rather than a `Uint8Array`. Both are additions, not alternative
+spellings of a shared call. Everything else is identical, and a script that
+sticks to the table above ports between all four languages by changing syntax
+alone.
 
 ### Batteries
 
