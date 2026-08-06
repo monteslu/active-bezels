@@ -49,9 +49,21 @@ npx abtool pack   my-bezel my-bezel.ab
 
 ```ruby
 def init; end            # optional; once, after the script loads
+def pre_render(frame); end # optional; BEFORE the core runs `frame`
 def tick(frame); end     # required; draw the whole scene, every frame
 def event(kind); end     # optional; the machine jumped (see AB::EVENT)
 ```
+`pre_render` (ABI 2) shapes the frame the core is ABOUT to run: region writes
+land before the game's logic consumes them, and `AB.input_override(port, device, index, id, value)` replaces what the
+core is polled with (`AB::BTN[:MASK]` writes the whole joypad word). Overrides
+clear before every call -- re-assert each frame -- and `AB.input` keeps
+reporting the PHYSICAL pad, so a remap can never read back its own output.
+Calls outside `pre_render` are refused (logged once). Frame 0 sees
+post-reset, pre-execution RAM. The full contract, the analog-read forms
+and the idempotence field notes live in the
+[Lua runtime README](../lua/README.md#the-contract) -- one surface, four
+bindings, only syntax differs.
+
 
 A bezel owns the whole **1920×1080** picture, including where the game goes.
 Coordinates are on that grid whatever the real output resolution is.

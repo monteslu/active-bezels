@@ -49,9 +49,28 @@ npx abtool pack   my-bezel my-bezel.ab
 
 ```lua
 function init() end          -- optional; once, after the script loads
+function pre_render(frame) end -- optional; BEFORE the core runs `frame`
 function tick(frame) end     -- required; draw the whole scene, every frame
 function event(kind) end     -- optional; the machine jumped (see ab.EVENT)
 ```
+
+`pre_render` (ABI 2) shapes the frame the core is ABOUT to run: region
+writes land before the game's logic consumes them, and
+`ab.input_override(port, device, index, id, value)` replaces what the core
+is polled with (`ab.BTN.MASK` writes the whole joypad word). Overrides
+clear before every call — re-assert each frame — and `ab.input` keeps
+reporting the PHYSICAL pad, so a remap can never read back its own output.
+`input_override` outside `pre_render` is refused (logged once). Frame 0
+sees post-reset, pre-execution RAM — gate on the frame number or a RAM
+signature if you need initialized state. Defining the function is the only
+opt-in; without it nothing is called and nothing costs.
+
+Two field lessons for `pre_render` transforms (learned on real games):
+they run once per EMULATED frame, but game state does not always advance
+with the frame (lag frames skip rebuilds; capture timing jitters) — so a
+transform must be **stateless per frame or idempotent**, never a bare
+toggle. And on cores that store RAM as native 16-bit words (Genesis), the
+bezel's region view is RAW — logical byte `n` lives at offset `n ~ 1`.
 
 A bezel owns the whole **1920×1080** picture, including where the game goes.
 Coordinates are on that grid whatever the real output resolution is.
@@ -97,11 +116,16 @@ Colours are packed `0xRRGGBBAA`; `ab.rgb(r, g, b[, a])` builds one.
 | **surfaces** | `surface_create` `surface_target` `surface_end` `surface_filter` `surface_preset` |
 | **shaders** | `effect_set` `effect_clear` |
 | **memory** | `region` `region_find_id` `region_size` `region_flags` `region_offset` `region_count` `region_generation` `read_u8` `read_u16` `read_u24` `read_u32` `read` `write_u8` |
-| **host** | `logical_width` `logical_height` `physical_width` `physical_height` `elapsed_ms` `delta_ms` `input` `log` `asset` `loadasset` `config_bool` `config_number` `config_string` `rgb` |
+| **host** | `logical_width` `logical_height` `physical_width` `physical_height` `elapsed_ms` `delta_ms` `input` `input_override` `log` `asset` `loadasset` `config_bool` `config_number` `config_string` `rgb` |
 
 Constant tables, so scripts never hard-code ABI numbers: `ab.EVENT` `ab.FIT`
-`ab.SAMPLE` `ab.DEVICE` `ab.BTN`. `ab.GAME` is the live-frame handle — pass it
-anywhere a texture is wanted.
+`ab.SAMPLE` `ab.DEVICE` `ab.BTN` (now through `L2/R2/L3/R3`) `ab.ANALOG`.
+`ab.GAME` is the live-frame handle — pass it anywhere a texture is wanted.
+
+Analog reads, where the host tracks them:
+`ab.input(port, ab.DEVICE.ANALOG, ab.ANALOG.LEFT, ab.ANALOG.X)` → stick
+axis −32768..32767; `ab.input(port, ab.DEVICE.ANALOG, ab.ANALOG.BUTTON,
+ab.BTN.L2)` → trigger pressure 0..32767.
 
 ### Lua shapes
 
