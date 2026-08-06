@@ -49,23 +49,23 @@ npx abtool pack   my-bezel my-bezel.ab
 
 ```lua
 function init() end          -- optional; once, after the script loads
-function pre_render(frame) end -- optional; BEFORE the core runs `frame`
+function pre_frame(frame) end -- optional; BEFORE the core runs `frame`
 function tick(frame) end     -- required; draw the whole scene, every frame
 function event(kind) end     -- optional; the machine jumped (see ab.EVENT)
 ```
 
-`pre_render` (ABI 2) shapes the frame the core is ABOUT to run: region
+`pre_frame` (ABI 2) shapes the frame the core is ABOUT to run: region
 writes land before the game's logic consumes them, and
 `ab.input_override(port, device, index, id, value)` replaces what the core
 is polled with (`ab.BTN.MASK` writes the whole joypad word). Overrides
 clear before every call — re-assert each frame — and `ab.input` keeps
 reporting the PHYSICAL pad, so a remap can never read back its own output.
-`input_override` outside `pre_render` is refused (logged once). Frame 0
+`input_override` outside `pre_frame` is refused (logged once). Frame 0
 sees post-reset, pre-execution RAM — gate on the frame number or a RAM
 signature if you need initialized state. Defining the function is the only
 opt-in; without it nothing is called and nothing costs.
 
-Two field lessons for `pre_render` transforms (learned on real games):
+Two field lessons for `pre_frame` transforms (learned on real games):
 they run once per EMULATED frame, but game state does not always advance
 with the frame (lag frames skip rebuilds; capture timing jitters) — so a
 transform must be **stateless per frame or idempotent**, never a bare

@@ -7,7 +7,7 @@
  *
  * Script contract (all globals, all optional except tick):
  *   function init()              -- once, after the script loads
- *   function pre_render(frame)   -- BEFORE the core runs `frame`; write
+ *   function pre_frame(frame)   -- BEFORE the core runs `frame`; write
  *                                   regions / ab.input_override to shape it
  *   function tick(frame)         -- once per emulated frame; draw the scene
  *   function event(kind)         -- host lifecycle events (AB_EVENT numbers)
@@ -52,7 +52,7 @@ void ab_runtime_writeline(void) { /* per-call log lines already break */ }
 
 static lua_State *L = NULL;
 static char g_error[512];
-static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_frame = 0;
 
 /* The platform redraw profiles (`nes`/`gb`/`md`/`snes`/`msx`/`pce`).
  * All logic lives in runtimes/common/ab_profiles.c, shared with the other
@@ -299,7 +299,7 @@ static int l_input(lua_State *S) {
 }
 
 /* input_override(port, device, index, id, value) -> accepted?
- * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * Only honored inside pre_frame; the host refuses (and logs once) anywhere
  * else. Same argument shape as ab.input, plus the value the CORE should see. */
 static int l_input_override(lua_State *S) {
   lua_pushboolean(S, ab_input_override(
@@ -627,8 +627,8 @@ static int load_script(void) {
   lua_getglobal(L, "event");
   g_has_event = lua_isfunction(L, -1);
   lua_pop(L, 1);
-  lua_getglobal(L, "pre_render");
-  g_has_pre_render = lua_isfunction(L, -1);
+  lua_getglobal(L, "pre_frame");
+  g_has_pre_frame = lua_isfunction(L, -1);
   lua_pop(L, 1);
   if (!g_has_tick) { set_error("lua runtime: main.lua must define a global function tick(frame)"); return 0; }
 
@@ -648,7 +648,7 @@ static int load_script(void) {
 
 static void boot(void) {
   if (L) { lua_close(L); L = NULL; }
-  g_has_tick = g_has_event = g_has_pre_render = 0;
+  g_has_tick = g_has_event = g_has_pre_frame = 0;
   L = luaL_newstate();
   if (!L) { set_error("lua runtime: luaL_newstate failed"); return; }
   /* base, string, table, math, utf8, coroutine. No io/os/package: there is
@@ -739,21 +739,21 @@ int32_t ab_init(uint32_t descriptor) {
 }
 
 /* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
- * and skips the per-frame ab_pre_render call entirely when the script defines
+ * and skips the per-frame ab_pre_frame call entirely when the script defines
  * no hook -- watch/breakpoint bursts step thousands of frames, so "not
  * defined" has to cost a cached property check, not an interpreter call. */
-AB_EXPORT("ab_pre_render_defined")
-int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+AB_EXPORT("ab_pre_frame_defined")
+int32_t ab_pre_frame_defined(void) { return g_has_pre_frame; }
 
-AB_EXPORT("ab_pre_render")
-int32_t ab_pre_render(uint64_t frame) {
-  /* No error panel here: pre_render runs before the frame, tick() owns the
+AB_EXPORT("ab_pre_frame")
+int32_t ab_pre_frame(uint64_t frame) {
+  /* No error panel here: pre_frame runs before the frame, tick() owns the
    * screen. A broken script already shows its panel there. */
-  if (g_error[0] || !L || !g_has_pre_render) return 0;
-  lua_getglobal(L, "pre_render");
+  if (g_error[0] || !L || !g_has_pre_frame) return 0;
+  lua_getglobal(L, "pre_frame");
   lua_pushinteger(L, (lua_Integer)frame);
   if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-    set_error(lua_tostring(L, -1) ? lua_tostring(L, -1) : "pre_render() failed");
+    set_error(lua_tostring(L, -1) ? lua_tostring(L, -1) : "pre_frame() failed");
     lua_pop(L, 1);
   }
   return 0;

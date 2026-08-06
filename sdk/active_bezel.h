@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-/* ABI 2 adds the optional pre_render hook + input_override. A guest that
+/* ABI 2 adds the optional pre_frame hook + input_override. A guest that
  * uses NEITHER may keep reporting 1 from ab_abi_version and stays loadable
- * on old hosts; a guest that imports input_override or exports ab_pre_render
+ * on old hosts; a guest that imports input_override or exports ab_pre_frame
  * must report 2 so an old host refuses it LOUDLY at load instead of running
  * it with the hook silently never called. */
 #define AB_ABI_VERSION 2
@@ -58,17 +58,17 @@
 #define AB_EXPORT(name)
 #endif
 
-/* --- The pre_render hook (ABI 2, OPT-IN) ---------------------------------
+/* --- The pre_frame hook (ABI 2, OPT-IN) ---------------------------------
  * A guest MAY export:
- *   AB_EXPORT("ab_pre_render") int32_t ab_pre_render(uint64_t frame);
+ *   AB_EXPORT("ab_pre_frame") int32_t ab_pre_frame(uint64_t frame);
  * The host calls it BEFORE the core runs the frame `frame`, every frame,
  * starting at frame 0 (post-reset, pre-execution RAM -- gate on the frame
  * number or a RAM signature if you need initialized state). Region writes
  * made here land before the game's own logic consumes them, and
  * input_override shapes what the core is about to be polled with. Region
  * READS here see post-previous-frame state (snapshot regions are NOT
- * re-refreshed between tick and pre_render -- they are the same instant).
- * MUST return 0; nonzero is reserved. If you export ab_pre_render, report
+ * re-refreshed between tick and pre_frame -- they are the same instant).
+ * MUST return 0; nonzero is reserved. If you export ab_pre_frame, report
  * AB_ABI_VERSION 2 from ab_abi_version. Absent export = hook never called,
  * nothing else changes. */
 AB_IMPORT("ab_host", "logical_width") extern int32_t ab_logical_width(void);
@@ -77,13 +77,13 @@ AB_IMPORT("ab_host", "physical_width") extern int32_t ab_physical_width(void);
 AB_IMPORT("ab_host", "physical_height") extern int32_t ab_physical_height(void);
 AB_IMPORT("ab_host", "input_state") extern int32_t ab_input_state(int32_t, int32_t, int32_t, int32_t);
 /* Replace what the CORE will see for this button/mask on the frame about to
- * run. Only honored inside ab_pre_render (see the hook note below); the
- * override is cleared before every pre_render, so a bezel re-asserts it each
+ * run. Only honored inside ab_pre_frame (see the hook note below); the
+ * override is cleared before every pre_frame, so a bezel re-asserts it each
  * frame. input_state keeps reporting the PHYSICAL pad -- the game sees the
  * override, the bezel sees the truth, so remap logic cannot feed back on its
  * own output. (port, device, index, id, value) mirrors input_state;
  * id AB_JOYPAD_MASK replaces the whole 16-bit joypad word. Returns 1 if the
- * host accepted it, 0 outside pre_render or when the host cannot override. */
+ * host accepted it, 0 outside pre_frame or when the host cannot override. */
 AB_IMPORT("ab_host", "input_override") extern int32_t ab_input_override(int32_t, int32_t, int32_t, int32_t, int32_t);
 AB_IMPORT("ab_host", "region_generation") extern int32_t ab_region_generation(void);
 AB_IMPORT("ab_host", "region_count") extern int32_t ab_region_count(void);

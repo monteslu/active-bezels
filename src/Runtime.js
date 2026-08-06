@@ -127,9 +127,9 @@ export class ActiveBezelRuntime {
          */
         input_override: (port, device, index, id, value) => {
           if (!this._inPreRender) {
-            this._warnOnce('input_override-outside-pre-render',
-              'input_override called outside pre_render -- it only shapes the '
-              + 'frame ABOUT to run, so call it from pre_render(frame). Ignored.');
+            this._warnOnce('input_override-outside-pre-frame',
+              'input_override called outside pre_frame -- it only shapes the '
+              + 'frame ABOUT to run, so call it from pre_frame(frame). Ignored.');
             return 0;
           }
           const applied = this.inputManager?.setOverride?.(port, device, index, id, value);
@@ -387,11 +387,11 @@ export class ActiveBezelRuntime {
   }
 
   /*
-   * Whether the guest actually wants pre_render this boot.
+   * Whether the guest actually wants pre_frame this boot.
    *
-   * Two shapes: a C guest signals by EXPORTING ab_pre_render at all, while
+   * Two shapes: a C guest signals by EXPORTING ab_pre_frame at all, while
    * the interpreter runtimes always export it and answer through
-   * ab_pre_render_defined (the script may or may not define the function,
+   * ab_pre_frame_defined (the script may or may not define the function,
    * and that can change across an ASSETS_RELOADED reboot -- which is why
    * event() below re-queries). Cached so the per-frame hook costs one
    * property check when no script hook exists, not a wasm call: watch and
@@ -399,12 +399,12 @@ export class ActiveBezelRuntime {
    */
   _refreshPreRenderDefined() {
     const exports = this.instance?.exports;
-    if (typeof exports?.ab_pre_render !== 'function') {
-      this._preRenderDefined = false;
+    if (typeof exports?.ab_pre_frame !== 'function') {
+      this._preFrameDefined = false;
       return;
     }
-    this._preRenderDefined = typeof exports.ab_pre_render_defined === 'function'
-      ? Number(exports.ab_pre_render_defined()) !== 0
+    this._preFrameDefined = typeof exports.ab_pre_frame_defined === 'function'
+      ? Number(exports.ab_pre_frame_defined()) !== 0
       : true;
   }
 
@@ -416,13 +416,13 @@ export class ActiveBezelRuntime {
   }
 
   /*
-   * Run the guest's pre_render hook for the frame the core is ABOUT to run.
+   * Run the guest's pre_frame hook for the frame the core is ABOUT to run.
    *
    * The contract that makes the hook worth having: the host calls this before
    * EVERY core frame (not per compose, not per capture), after physical input
    * is known, before the core polls it. Anything the guest writes to a live
    * region or overrides on the pad is what the game's own logic consumes this
-   * frame. Ordering with tick(): pre_render(N) -> core frame N -> tick(N).
+   * frame. Ordering with tick(): pre_frame(N) -> core frame N -> tick(N).
    *
    * Input overrides from the PREVIOUS frame are cleared here first, so an
    * override is one frame's statement, re-asserted every frame the bezel
@@ -432,21 +432,21 @@ export class ActiveBezelRuntime {
    * like a tick trap: a broken package must not take the emulation down.
    */
   preFrame(frameNumber) {
-    if (!this.enabled || !this._preRenderDefined) return false;
+    if (!this.enabled || !this._preFrameDefined) return false;
     this.inputManager?.clearOverrides?.();
     this._inPreRender = true;
     try {
-      const result = Number(this.instance.exports.ab_pre_render(BigInt(frameNumber)));
+      const result = Number(this.instance.exports.ab_pre_frame(BigInt(frameNumber)));
       if (result !== 0) {
-        this._warnOnce('pre-render-nonzero',
-          `pre_render returned ${result}; nonzero is reserved and ignored (return 0)`);
+        this._warnOnce('pre-frame-nonzero',
+          `pre_frame returned ${result}; nonzero is reserved and ignored (return 0)`);
       }
-      this.stats.preRenders = (this.stats.preRenders ?? 0) + 1;
+      this.stats.preFrames = (this.stats.preFrames ?? 0) + 1;
       return true;
     } catch (err) {
       this.error = err;
       this.enabled = false;
-      console.error(`[active-bezel] disabled after pre_render trap: ${err?.stack ?? err}`);
+      console.error(`[active-bezel] disabled after pre_frame trap: ${err?.stack ?? err}`);
       return false;
     } finally {
       this._inPreRender = false;
@@ -538,7 +538,7 @@ export class ActiveBezelRuntime {
     if (!this.enabled || typeof this.instance?.exports?.ab_event !== 'function') return;
     this.instance.exports.ab_event(type, 0);
     /* ASSETS_RELOADED reboots the interpreter runtimes and the reloaded
-     * script may have gained or lost pre_render -- re-ask rather than keep
+     * script may have gained or lost pre_frame -- re-ask rather than keep
      * calling (or keep skipping) a hook that no longer exists. */
     if (type === AB_EVENT.ASSETS_RELOADED) this._refreshPreRenderDefined();
   }
@@ -635,12 +635,12 @@ export class ActiveBezelRuntime {
         rendererBackend: this.compositor.gpuReady ? 'opengl-es-3' : 'cpu',
       },
       regions: this.regions.describe(),
-      /* Surfaced so a session can SEE that a bezel shapes the game (pre_render
+      /* Surfaced so a session can SEE that a bezel shapes the game (pre_frame
        * writes are host-side pokes, invisible to core-side watch/breakpoint --
        * an agent debugging "values change with no writer" needs this flag). */
-      preRender: {
-        defined: !!this._preRenderDefined,
-        calls: this.stats.preRenders ?? 0,
+      preFrame: {
+        defined: !!this._preFrameDefined,
+        calls: this.stats.preFrames ?? 0,
       },
       stats: {
         ...this.stats,

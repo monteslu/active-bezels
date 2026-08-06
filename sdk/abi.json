@@ -29,14 +29,14 @@
       "result": null,
       "required": true
     },
-    "ab_pre_render": {
+    "ab_pre_frame": {
       "params": [
         "i64"
       ],
       "result": "i32",
       "required": false
     },
-    "ab_pre_render_defined": {
+    "ab_pre_frame_defined": {
       "params": [],
       "result": "i32",
       "required": false

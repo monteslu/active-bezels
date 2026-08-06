@@ -4,27 +4,27 @@
 
 ### Added
 
-- **The `pre_render` hook (ABI 2, opt-in).** A guest may export
-  `int32_t ab_pre_render(uint64_t frame)`; the host calls it before EVERY
+- **The `pre_frame` hook (ABI 2, opt-in).** A guest may export
+  `int32_t ab_pre_frame(uint64_t frame)`; the host calls it before EVERY
   core frame, after physical input is known and before the core polls it.
-  `ab_tick` observes the frame the core produced — `ab_pre_render` shapes
+  `ab_tick` observes the frame the core produced — `ab_pre_frame` shapes
   the frame the core is about to run: region writes land before the game's
   logic consumes them, and the new `input_override(port, device, index, id,
   value)` host import replaces what the core sees for this frame (id 256 =
-  the whole joypad mask). Overrides clear before every `pre_render`, so an
+  the whole joypad mask). Overrides clear before every `pre_frame`, so an
   override is one frame's statement, re-asserted each frame. `input_state`
   keeps reporting the PHYSICAL pad — the game sees the override, the bezel
   sees the truth, so a left/right swap cannot read back its own output.
-  `input_override` outside `pre_render` is refused (logged once): a
+  `input_override` outside `pre_frame` is refused (logged once): a
   tick-time override would ambiguously target the next frame and then be
   discarded. Frame 0 is included (post-reset, pre-execution RAM — gate on
   the frame number or a RAM signature if you need initialized state); the
   host never steps the core to "warm up". The return value is reserved:
   return 0.
-- **`pre_render(frame)` in all four scripting runtimes** (Lua, Python,
+- **`pre_frame(frame)` in all four scripting runtimes** (Lua, Python,
   JavaScript, Ruby — same optional global as `init`/`event`), plus
   `ab.input_override` / `AB.input_override` bindings, and
-  `ab_pre_render_defined()` so hosts skip the per-frame call entirely when
+  `ab_pre_frame_defined()` so hosts skip the per-frame call entirely when
   the script defines no hook. Verified with the cross-runtime parity
   harness: identical composed frames, identical log streams AND identical
   override call sequences across all four languages.
@@ -41,8 +41,8 @@
   runtimes now report 2.
 - `ActiveBezelRuntime.preFrame(frameNumber)` — the embedder-facing entry
   hosts call before each core frame; `status()` reports
-  `preRender: {defined, calls}` so a session can SEE that a bezel shapes
-  the game (pre_render writes are host-side pokes, invisible to core-side
+  `preFrame: {defined, calls}` so a session can SEE that a bezel shapes
+  the game (pre_frame writes are host-side pokes, invisible to core-side
   write watchpoints).
 
 ### Changed

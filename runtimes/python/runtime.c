@@ -7,7 +7,7 @@
  *
  * Script contract (module-level functions, all optional except tick):
  *   def init():              -- once, after the script loads
- *   def pre_render(frame):   -- BEFORE the core runs `frame`; write regions /
+ *   def pre_frame(frame):   -- BEFORE the core runs `frame`; write regions /
  *                               ab.input_override to shape the frame to come
  *   def tick(frame):         -- once per emulated frame; draw the whole scene
  *   def event(kind):         -- host lifecycle events (ab.EVENT.* values)
@@ -61,7 +61,7 @@ static char g_heap[GC_HEAP_BYTES];
 
 static char g_error[512];
 static int g_booted = 0;               /* MicroPython initialised */
-static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_frame = 0;
 
 static void set_error(const char *message) {
   size_t n = strlen(message);
@@ -489,7 +489,7 @@ static mp_obj_t ab_input_fn(size_t n, const mp_obj_t *a) {
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_input_obj, 1, 4, ab_input_fn);
 
 /* input_override(port, device, index, id, value) -> accepted?
- * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * Only honored inside pre_frame; the host refuses (and logs once) anywhere
  * else. Same argument shape as ab.input, plus the value the CORE should see. */
 static mp_obj_t ab_input_override_fn(size_t n, const mp_obj_t *a) {
   (void)n;
@@ -792,7 +792,7 @@ static int load_script(void) {
 
   g_has_tick = script_fn("tick") != MP_OBJ_NULL;
   g_has_event = script_fn("event") != MP_OBJ_NULL;
-  g_has_pre_render = script_fn("pre_render") != MP_OBJ_NULL;
+  g_has_pre_frame = script_fn("pre_frame") != MP_OBJ_NULL;
   if (!g_has_tick) {
     set_error("python runtime: main.py must define a function tick(frame)");
     return 0;
@@ -808,7 +808,7 @@ static void boot(void) {
     mp_deinit();
     g_booted = 0;
   }
-  g_has_tick = g_has_event = g_has_pre_render = 0;
+  g_has_tick = g_has_event = g_has_pre_frame = 0;
   g_script_globals = NULL;
 
   mp_stack_ctrl_init();
@@ -862,17 +862,17 @@ int32_t ab_init(uint32_t descriptor) {
 }
 
 /* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
- * and skips the per-frame ab_pre_render call entirely when the script defines
+ * and skips the per-frame ab_pre_frame call entirely when the script defines
  * no hook. */
-AB_EXPORT("ab_pre_render_defined")
-int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+AB_EXPORT("ab_pre_frame_defined")
+int32_t ab_pre_frame_defined(void) { return g_has_pre_frame; }
 
-AB_EXPORT("ab_pre_render")
-int32_t ab_pre_render(uint64_t frame) {
-  /* No error panel here: pre_render runs before the frame, tick() owns the
+AB_EXPORT("ab_pre_frame")
+int32_t ab_pre_frame(uint64_t frame) {
+  /* No error panel here: pre_frame runs before the frame, tick() owns the
    * screen. A broken script already shows its panel there. */
-  if (g_error[0] || !g_booted || !g_has_pre_render) return 0;
-  call_script("pre_render", mp_obj_new_int_from_ull(frame), 1);
+  if (g_error[0] || !g_booted || !g_has_pre_frame) return 0;
+  call_script("pre_frame", mp_obj_new_int_from_ull(frame), 1);
   return 0;
 }
 

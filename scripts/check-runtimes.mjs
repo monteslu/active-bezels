@@ -65,14 +65,14 @@ const REQUIRED_EXPORTS = Object.entries(abi.guestExports)
 
 /*
  * The ABI functions the task contract names. ab_event, ab_shutdown,
- * ab_pre_render and ab_pre_render_defined are optional in abi.json (a guest
+ * ab_pre_frame and ab_pre_frame_defined are optional in abi.json (a guest
  * may omit them), but every runtime we SHIP implements all of these, because
  * a runtime that cannot receive an event, clean up, or route a script's
- * pre_render hook is not a complete host for a scripting language. So the
+ * pre_frame hook is not a complete host for a scripting language. So the
  * bar for runtimes/ is stricter than the bar for an arbitrary guest.
  */
 const RUNTIME_EXPORTS = ['ab_abi_version', 'ab_init', 'ab_tick', 'ab_event', 'ab_shutdown',
-  'ab_pre_render', 'ab_pre_render_defined'];
+  'ab_pre_frame', 'ab_pre_frame_defined'];
 
 const WASM_TYPE = { 0x7f: 'i32', 0x7e: 'i64', 0x7d: 'f32', 0x7c: 'f64' };
 

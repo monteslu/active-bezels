@@ -175,7 +175,7 @@ export const CORE_REGIONS = [
    * Honest flags: SNAPSHOT regions (fill-a-buffer getters and per-frame
    * capture planes) do not carry the WRITE bit. A write to one lands in a
    * staging buffer the core never reads back -- it "succeeds" and does
-   * nothing, which with pre_render in the ABI would be the worst kind of
+   * nothing, which with pre_frame in the ABI would be the worst kind of
    * silent no-op. write() gates on the flag, so those writes now return 0
    * and a guest can tell "I changed the machine" from "I changed a copy".
    * Live-pointer regions (system_ram, OAM, nametables, cart RAM...) keep it.

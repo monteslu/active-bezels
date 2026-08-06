@@ -6,7 +6,7 @@
 //   function init()        optional -- once, after the script loads
 //   function tick(frame)   REQUIRED -- once per emulated frame; draw everything
 //   function event(kind)   optional -- host lifecycle (see ab.EVENT)
-//   function pre_render(frame) optional -- BEFORE the core runs `frame`:
+//   function pre_frame(frame) optional -- BEFORE the core runs `frame`:
 //     write regions / ab.input_override(port, dev, idx, id, value) to shape
 //     the frame about to run (overrides clear each frame; ab.input still
 //     reports the physical pad)

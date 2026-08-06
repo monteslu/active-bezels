@@ -7,7 +7,7 @@
  *
  * Script contract (all top-level methods, all optional except tick):
  *   def init()        -- once, after the script loads
- *   def pre_render(frame) -- BEFORE the core runs `frame` (optional)
+ *   def pre_frame(frame) -- BEFORE the core runs `frame` (optional)
  *   def tick(frame)   -- once per emulated frame; draw the whole scene
  *   def event(kind)   -- host lifecycle events (AB_EVENT numbers)
  *
@@ -44,7 +44,7 @@ void ab_profiles_rb_shutdown(void);
 
 static mrb_state *mrb = NULL;
 static char g_error[512];
-static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_frame = 0;
 
 static void set_error(const char *message) {
   size_t n = strlen(message);
@@ -412,7 +412,7 @@ static mrb_value ab_m_input(mrb_state *m, mrb_value self) {
 }
 
 /* AB.input_override(port, device, index, id, value) -> accepted?
- * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * Only honored inside pre_frame; the host refuses (and logs once) anywhere
  * else. Same argument shape as AB.input, plus the value the CORE should see. */
 static mrb_value ab_m_input_override(mrb_state *m, mrb_value self) {
   mrb_int a, b, c, d, v;
@@ -829,7 +829,7 @@ static int load_script(void) {
 
   g_has_tick = top_level_defines(mrb, "tick");
   g_has_event = top_level_defines(mrb, "event");
-  g_has_pre_render = top_level_defines(mrb, "pre_render");
+  g_has_pre_frame = top_level_defines(mrb, "pre_frame");
   if (!g_has_tick) {
     set_error("ruby runtime: main.rb must define a top-level method tick(frame)");
     return 0;
@@ -845,7 +845,7 @@ static int load_script(void) {
 
 static void boot(void) {
   if (mrb) { mrb_close(mrb); mrb = NULL; }
-  g_has_tick = g_has_event = g_has_pre_render = 0;
+  g_has_tick = g_has_event = g_has_pre_frame = 0;
   g_error[0] = 0;
   mrb = mrb_open();
   if (!mrb) { set_error("ruby runtime: mrb_open failed"); return; }
@@ -876,21 +876,21 @@ int32_t ab_init(uint32_t descriptor) {
 }
 
 /* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
- * and skips the per-frame ab_pre_render call entirely when the script defines
+ * and skips the per-frame ab_pre_frame call entirely when the script defines
  * no hook. */
-AB_EXPORT("ab_pre_render_defined")
-int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+AB_EXPORT("ab_pre_frame_defined")
+int32_t ab_pre_frame_defined(void) { return g_has_pre_frame; }
 
-AB_EXPORT("ab_pre_render")
-int32_t ab_pre_render(uint64_t frame) {
-  /* No error panel here: pre_render runs before the frame, tick() owns the
+AB_EXPORT("ab_pre_frame")
+int32_t ab_pre_frame(uint64_t frame) {
+  /* No error panel here: pre_frame runs before the frame, tick() owns the
    * screen. A broken script already shows its panel there. Arena save/restore
    * for the same reason tick does it: 60 unrestored calls a second overflow
    * the GC arena in under a minute. */
-  if (g_error[0] || !mrb || !g_has_pre_render) return 0;
+  if (g_error[0] || !mrb || !g_has_pre_frame) return 0;
   int ai = mrb_gc_arena_save(mrb);
-  mrb_funcall(mrb, mrb_top_self(mrb), "pre_render", 1, mrb_int_value(mrb, (mrb_int)frame));
-  guard("pre_render()");
+  mrb_funcall(mrb, mrb_top_self(mrb), "pre_frame", 1, mrb_int_value(mrb, (mrb_int)frame));
+  guard("pre_frame()");
   mrb_gc_arena_restore(mrb, ai);
   return 0;
 }

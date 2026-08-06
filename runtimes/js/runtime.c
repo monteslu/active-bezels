@@ -7,7 +7,7 @@
  *
  * Script contract (all globals, all optional except tick):
  *   function init()        -- once, after the script loads
- *   function pre_render(frame) -- BEFORE the core runs `frame` (optional)
+ *   function pre_frame(frame) -- BEFORE the core runs `frame` (optional)
  *   function tick(frame)   -- once per emulated frame; draw the whole scene
  *   function event(kind)   -- host lifecycle events (AB_EVENT numbers)
  *
@@ -41,7 +41,7 @@ void ab_profiles_js_shutdown(void);
 static JSRuntime *g_rt = NULL;
 static JSContext *g_ctx = NULL;
 static char g_error[512];
-static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_frame = 0;
 
 static void set_error(const char *message) {
   size_t n = strlen(message);
@@ -430,7 +430,7 @@ AB_FN(js_input) {
 }
 
 /* input_override(port, device, index, id, value) -> accepted?
- * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * Only honored inside pre_frame; the host refuses (and logs once) anywhere
  * else. Same argument shape as ab.input, plus the value the CORE should see. */
 AB_FN(js_input_override) {
   AB_UNUSED();
@@ -884,8 +884,8 @@ static int load_script(void) {
   fn = JS_GetPropertyStr(g_ctx, global, "event");
   g_has_event = JS_IsFunction(g_ctx, fn);
   JS_FreeValue(g_ctx, fn);
-  fn = JS_GetPropertyStr(g_ctx, global, "pre_render");
-  g_has_pre_render = JS_IsFunction(g_ctx, fn);
+  fn = JS_GetPropertyStr(g_ctx, global, "pre_frame");
+  g_has_pre_frame = JS_IsFunction(g_ctx, fn);
   JS_FreeValue(g_ctx, fn);
   if (!g_has_tick) {
     JS_FreeValue(g_ctx, global);
@@ -915,7 +915,7 @@ static int load_script(void) {
 static void teardown(void) {
   if (g_ctx) { JS_FreeContext(g_ctx); g_ctx = NULL; }
   if (g_rt) { JS_FreeRuntime(g_rt); g_rt = NULL; }
-  g_has_tick = g_has_event = g_has_pre_render = 0;
+  g_has_tick = g_has_event = g_has_pre_frame = 0;
 }
 
 static void boot(void) {
@@ -1048,17 +1048,17 @@ int32_t ab_init(uint32_t descriptor) {
 }
 
 /* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
- * and skips the per-frame ab_pre_render call entirely when the script defines
+ * and skips the per-frame ab_pre_frame call entirely when the script defines
  * no hook. */
-AB_EXPORT("ab_pre_render_defined")
-int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+AB_EXPORT("ab_pre_frame_defined")
+int32_t ab_pre_frame_defined(void) { return g_has_pre_frame; }
 
-AB_EXPORT("ab_pre_render")
-int32_t ab_pre_render(uint64_t frame) {
-  /* No error panel here: pre_render runs before the frame, tick() owns the
+AB_EXPORT("ab_pre_frame")
+int32_t ab_pre_frame(uint64_t frame) {
+  /* No error panel here: pre_frame runs before the frame, tick() owns the
    * screen. A broken script already shows its panel there. */
-  if (g_error[0] || !g_ctx || !g_has_pre_render) return 0;
-  call_hook("pre_render", (double)frame);
+  if (g_error[0] || !g_ctx || !g_has_pre_frame) return 0;
+  call_hook("pre_frame", (double)frame);
   return 0;
 }
 
