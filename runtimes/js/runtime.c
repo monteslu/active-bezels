@@ -7,6 +7,7 @@
  *
  * Script contract (all globals, all optional except tick):
  *   function init()        -- once, after the script loads
+ *   function pre_render(frame) -- BEFORE the core runs `frame` (optional)
  *   function tick(frame)   -- once per emulated frame; draw the whole scene
  *   function event(kind)   -- host lifecycle events (AB_EVENT numbers)
  *
@@ -40,7 +41,7 @@ void ab_profiles_js_shutdown(void);
 static JSRuntime *g_rt = NULL;
 static JSContext *g_ctx = NULL;
 static char g_error[512];
-static int g_has_tick = 0, g_has_event = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
 
 static void set_error(const char *message) {
   size_t n = strlen(message);
@@ -428,6 +429,17 @@ AB_FN(js_input) {
     arg_int(ctx, argv[2], 0), arg_int(ctx, argv[3], 0)));
 }
 
+/* input_override(port, device, index, id, value) -> accepted?
+ * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * else. Same argument shape as ab.input, plus the value the CORE should see. */
+AB_FN(js_input_override) {
+  AB_UNUSED();
+  return JS_NewBool(ctx, ab_input_override(
+    arg_int(ctx, argv[0], 0), arg_int(ctx, argv[1], 1),
+    arg_int(ctx, argv[2], 0), arg_int(ctx, argv[3], 0),
+    arg_int(ctx, argv[4], 0)) != 0);
+}
+
 AB_FN(js_log) {
   size_t n = 0;
   const char *s;
@@ -767,6 +779,7 @@ static const JSCFunctionListEntry AB_FUNCS[] = {
   JS_CFUNC_DEF("elapsed_ms", 0, js_elapsed_ms),
   JS_CFUNC_DEF("delta_ms", 0, js_delta_ms),
   JS_CFUNC_DEF("input", 4, js_input),
+  JS_CFUNC_DEF("input_override", 5, js_input_override),
   JS_CFUNC_DEF("log", 1, js_log),
   JS_CFUNC_DEF("region", 1, js_region),
   JS_CFUNC_DEF("region_find_id", 1, js_region_find_id),
@@ -871,6 +884,9 @@ static int load_script(void) {
   fn = JS_GetPropertyStr(g_ctx, global, "event");
   g_has_event = JS_IsFunction(g_ctx, fn);
   JS_FreeValue(g_ctx, fn);
+  fn = JS_GetPropertyStr(g_ctx, global, "pre_render");
+  g_has_pre_render = JS_IsFunction(g_ctx, fn);
+  JS_FreeValue(g_ctx, fn);
   if (!g_has_tick) {
     JS_FreeValue(g_ctx, global);
     set_error("js runtime: main.js must define a global function tick(frame)");
@@ -899,7 +915,7 @@ static int load_script(void) {
 static void teardown(void) {
   if (g_ctx) { JS_FreeContext(g_ctx); g_ctx = NULL; }
   if (g_rt) { JS_FreeRuntime(g_rt); g_rt = NULL; }
-  g_has_tick = g_has_event = 0;
+  g_has_tick = g_has_event = g_has_pre_render = 0;
 }
 
 static void boot(void) {
@@ -956,7 +972,13 @@ static void boot(void) {
     }, BTN[] = {
       { "B", 0 }, { "Y", 1 }, { "SELECT", 2 }, { "START", 3 },
       { "UP", 4 }, { "DOWN", 5 }, { "LEFT", 6 }, { "RIGHT", 7 },
-      { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 }, { "MASK", 256 },
+      { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 },
+      { "L2", 12 }, { "R2", 13 }, { "L3", 14 }, { "R3", 15 }, { "MASK", 256 },
+    }, ANALOG[] = {
+      /* ab.input(port, ab.DEVICE.ANALOG, index, id):
+       * sticks: index LEFT/RIGHT, id X/Y -> -32768..32767
+       * triggers: index BUTTON, id ab.BTN.L2 / ab.BTN.R2 -> 0..32767 */
+      { "LEFT", 0 }, { "RIGHT", 1 }, { "BUTTON", 2 }, { "X", 0 }, { "Y", 1 },
     };
     /* ab.GAME: pass as a texture handle to sample the LIVE GAME FRAME, e.g.
      * ab.quad(corners, ab.GAME) maps the running game onto a tilted plane. */
@@ -966,6 +988,7 @@ static void boot(void) {
     define_consts(g_ctx, ab, "SAMPLE", SAMPLE, (int)(sizeof(SAMPLE) / sizeof(SAMPLE[0])));
     define_consts(g_ctx, ab, "DEVICE", DEVICE, (int)(sizeof(DEVICE) / sizeof(DEVICE[0])));
     define_consts(g_ctx, ab, "BTN", BTN, (int)(sizeof(BTN) / sizeof(BTN[0])));
+    define_consts(g_ctx, ab, "ANALOG", ANALOG, (int)(sizeof(ANALOG) / sizeof(ANALOG[0])));
   }
   JS_SetPropertyStr(g_ctx, global, "ab", ab);
 
@@ -1006,8 +1029,11 @@ static void call_hook(const char *name, double arg) {
 
 /* ------------------------------------------------------------ entrypoints -- */
 
+/* 2, not 1: this runtime imports input_override, so it cannot instantiate on
+ * a pre-ABI-2 host anyway -- reporting 2 turns that LinkError into the
+ * versioned refusal the spec promises. */
 AB_EXPORT("ab_abi_version")
-int32_t ab_abi_version(void) { return 1; }
+int32_t ab_abi_version(void) { return AB_ABI_VERSION; }
 
 AB_EXPORT("ab_init")
 int32_t ab_init(uint32_t descriptor) {
@@ -1019,6 +1045,21 @@ int32_t ab_init(uint32_t descriptor) {
   boot();
   return 0; /* 0 = success. A script error is NOT an init failure: the error
              * state still wants ticks so it can display itself. */
+}
+
+/* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
+ * and skips the per-frame ab_pre_render call entirely when the script defines
+ * no hook. */
+AB_EXPORT("ab_pre_render_defined")
+int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+
+AB_EXPORT("ab_pre_render")
+int32_t ab_pre_render(uint64_t frame) {
+  /* No error panel here: pre_render runs before the frame, tick() owns the
+   * screen. A broken script already shows its panel there. */
+  if (g_error[0] || !g_ctx || !g_has_pre_render) return 0;
+  call_hook("pre_render", (double)frame);
+  return 0;
 }
 
 AB_EXPORT("ab_tick")

@@ -157,7 +157,9 @@ package has to bless -- the contract is small enough to implement anywhere:
 - import from one module, `ab_host`
 - export five functions: `ab_abi_version`, `ab_init`, `ab_tick`, `ab_event`,
   `ab_shutdown` (three more are optional, for guests that render their own
-  framebuffer rather than emitting draw commands)
+  framebuffer rather than emitting draw commands; a further optional
+  `ab_pre_render` — ABI 2 — runs BEFORE each core frame and may write live
+  regions or override the input the core is about to see)
 - no WASI, no filesystem, no clock beyond what `ab_host` hands you
 
 Anything that can produce a freestanding `wasm32` module qualifies:

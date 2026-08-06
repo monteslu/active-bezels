@@ -116,6 +116,30 @@ export class ActiveBezelRuntime {
         physical_height: () => this.physicalHeight,
         input_state: (port, device, index, id) =>
           this.inputManager?.getState(port, device, index, id) ?? 0,
+        /*
+         * Replace what the CORE sees for the frame about to run. Honored only
+         * inside preFrame(): a tick-time override would ambiguously target the
+         * NEXT frame and then be silently discarded when the overlay clears, so
+         * it is refused here with a visible complaint instead of half-working.
+         * input_state above keeps reporting the PHYSICAL pad -- the game sees
+         * the override, the bezel sees the truth, so a left/right swap cannot
+         * read back its own output and re-swap.
+         */
+        input_override: (port, device, index, id, value) => {
+          if (!this._inPreRender) {
+            this._warnOnce('input_override-outside-pre-render',
+              'input_override called outside pre_render -- it only shapes the '
+              + 'frame ABOUT to run, so call it from pre_render(frame). Ignored.');
+            return 0;
+          }
+          const applied = this.inputManager?.setOverride?.(port, device, index, id, value);
+          if (applied === undefined) {
+            this._warnOnce('input_override-unsupported',
+              'this host cannot override input (inputManager has no setOverride). Ignored.');
+            return 0;
+          }
+          return applied ? 1 : 0;
+        },
         region_generation: () => this.regions.generation,
         region_count: () => this.regions.regions.length,
         region_name_length: (index) => this.regions.regions[index]?.name.length ?? 0,
@@ -352,10 +376,81 @@ export class ActiveBezelRuntime {
     for (const name of ['ab_abi_version', 'ab_init', 'ab_tick']) {
       if (typeof exports[name] !== 'function') throw new Error(`Active Bezel is missing export ${name}`);
     }
-    if (Number(exports.ab_abi_version()) !== 1) throw new Error('Active Bezel guest ABI version is not 1');
+    const abi = Number(exports.ab_abi_version());
+    if (abi !== 1 && abi !== 2) {
+      throw new Error(`Active Bezel guest ABI version ${abi} is not supported (this host speaks 1 and 2)`);
+    }
     const initResult = Number(exports.ab_init(0));
     if (initResult !== 0) throw new Error(`Active Bezel initialization failed (${initResult})`);
+    this._refreshPreRenderDefined();
     this.enabled = true;
+  }
+
+  /*
+   * Whether the guest actually wants pre_render this boot.
+   *
+   * Two shapes: a C guest signals by EXPORTING ab_pre_render at all, while
+   * the interpreter runtimes always export it and answer through
+   * ab_pre_render_defined (the script may or may not define the function,
+   * and that can change across an ASSETS_RELOADED reboot -- which is why
+   * event() below re-queries). Cached so the per-frame hook costs one
+   * property check when no script hook exists, not a wasm call: watch and
+   * breakpoint bursts step thousands of frames.
+   */
+  _refreshPreRenderDefined() {
+    const exports = this.instance?.exports;
+    if (typeof exports?.ab_pre_render !== 'function') {
+      this._preRenderDefined = false;
+      return;
+    }
+    this._preRenderDefined = typeof exports.ab_pre_render_defined === 'function'
+      ? Number(exports.ab_pre_render_defined()) !== 0
+      : true;
+  }
+
+  _warnOnce(key, message) {
+    this._warned ??= new Set();
+    if (this._warned.has(key)) return;
+    this._warned.add(key);
+    console.error(`[active-bezel] ${message}`);
+  }
+
+  /*
+   * Run the guest's pre_render hook for the frame the core is ABOUT to run.
+   *
+   * The contract that makes the hook worth having: the host calls this before
+   * EVERY core frame (not per compose, not per capture), after physical input
+   * is known, before the core polls it. Anything the guest writes to a live
+   * region or overrides on the pad is what the game's own logic consumes this
+   * frame. Ordering with tick(): pre_render(N) -> core frame N -> tick(N).
+   *
+   * Input overrides from the PREVIOUS frame are cleared here first, so an
+   * override is one frame's statement, re-asserted every frame the bezel
+   * still wants it -- never a sticky mode the host and guest disagree about.
+   *
+   * Returns true if the hook ran. A guest trap disables the bezel exactly
+   * like a tick trap: a broken package must not take the emulation down.
+   */
+  preFrame(frameNumber) {
+    if (!this.enabled || !this._preRenderDefined) return false;
+    this.inputManager?.clearOverrides?.();
+    this._inPreRender = true;
+    try {
+      const result = Number(this.instance.exports.ab_pre_render(BigInt(frameNumber)));
+      if (result !== 0) {
+        this._warnOnce('pre-render-nonzero',
+          `pre_render returned ${result}; nonzero is reserved and ignored (return 0)`);
+      }
+      this.stats.preRenders = (this.stats.preRenders ?? 0) + 1;
+      return true;
+    } catch (err) {
+      this.error = err;
+      this.enabled = false;
+      console.error(`[active-bezel] disabled after pre_render trap: ${err?.stack ?? err}`);
+      return false;
+    } finally {
+      this._inPreRender = false;
+    }
   }
 
   processFrame(gameRgba, gameWidth, gameHeight, frameNumber) {
@@ -442,6 +537,10 @@ export class ActiveBezelRuntime {
     }
     if (!this.enabled || typeof this.instance?.exports?.ab_event !== 'function') return;
     this.instance.exports.ab_event(type, 0);
+    /* ASSETS_RELOADED reboots the interpreter runtimes and the reloaded
+     * script may have gained or lost pre_render -- re-ask rather than keep
+     * calling (or keep skipping) a hook that no longer exists. */
+    if (type === AB_EVENT.ASSETS_RELOADED) this._refreshPreRenderDefined();
   }
 
   /*
@@ -536,6 +635,13 @@ export class ActiveBezelRuntime {
         rendererBackend: this.compositor.gpuReady ? 'opengl-es-3' : 'cpu',
       },
       regions: this.regions.describe(),
+      /* Surfaced so a session can SEE that a bezel shapes the game (pre_render
+       * writes are host-side pokes, invisible to core-side watch/breakpoint --
+       * an agent debugging "values change with no writer" needs this flag). */
+      preRender: {
+        defined: !!this._preRenderDefined,
+        calls: this.stats.preRenders ?? 0,
+      },
       stats: {
         ...this.stats,
         averageTickMs: this.stats.ticks ? this.stats.totalTickMs / this.stats.ticks : 0,

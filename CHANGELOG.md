@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+
+- **The `pre_render` hook (ABI 2, opt-in).** A guest may export
+  `int32_t ab_pre_render(uint64_t frame)`; the host calls it before EVERY
+  core frame, after physical input is known and before the core polls it.
+  `ab_tick` observes the frame the core produced — `ab_pre_render` shapes
+  the frame the core is about to run: region writes land before the game's
+  logic consumes them, and the new `input_override(port, device, index, id,
+  value)` host import replaces what the core sees for this frame (id 256 =
+  the whole joypad mask). Overrides clear before every `pre_render`, so an
+  override is one frame's statement, re-asserted each frame. `input_state`
+  keeps reporting the PHYSICAL pad — the game sees the override, the bezel
+  sees the truth, so a left/right swap cannot read back its own output.
+  `input_override` outside `pre_render` is refused (logged once): a
+  tick-time override would ambiguously target the next frame and then be
+  discarded. Frame 0 is included (post-reset, pre-execution RAM — gate on
+  the frame number or a RAM signature if you need initialized state); the
+  host never steps the core to "warm up". The return value is reserved:
+  return 0.
+- **`pre_render(frame)` in all four scripting runtimes** (Lua, Python,
+  JavaScript, Ruby — same optional global as `init`/`event`), plus
+  `ab.input_override` / `AB.input_override` bindings, and
+  `ab_pre_render_defined()` so hosts skip the per-frame call entirely when
+  the script defines no hook. Verified with the cross-runtime parity
+  harness: identical composed frames, identical log streams AND identical
+  override call sequences across all four languages.
+- **Analog input surface.** `input_state` with the ANALOG device (5) reads
+  stick positions (index 0/1, id 0=X/1=Y, −32768..32767) and trigger
+  pressure (index 2, id 12/13, 0..32767) where the host tracks them.
+  Constant tables gained `BTN.L2/R2/L3/R3` and a new `ANALOG` group
+  (`LEFT/RIGHT/BUTTON/X/Y`); the C header gained the matching `AB_BTN_*`
+  and `AB_ANALOG_*` defines.
+- Hosts accept guest ABI versions 1 AND 2. A guest that uses neither new
+  surface may keep reporting 1 and loads on old hosts; a guest that imports
+  `input_override` cannot instantiate on a pre-ABI-2 host (missing import),
+  which is the loud failure the versioning promises. The four shipped
+  runtimes now report 2.
+- `ActiveBezelRuntime.preFrame(frameNumber)` — the embedder-facing entry
+  hosts call before each core frame; `status()` reports
+  `preRender: {defined, calls}` so a session can SEE that a bezel shapes
+  the game (pre_render writes are host-side pokes, invisible to core-side
+  write watchpoints).
+
+### Changed
+
+- **Honest region flags.** Snapshot-backed regions (fill-a-buffer getters
+  and per-frame capture planes) no longer carry the WRITE flag; a write to
+  one used to "succeed" into a staging buffer the core never reads back.
+  `region_write_u8` on them now returns 0, so a guest can tell "I changed
+  the machine" from "I changed a copy".
+
 ## 0.6.0
 
 ### Added

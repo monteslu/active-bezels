@@ -7,6 +7,7 @@
  *
  * Script contract (all top-level methods, all optional except tick):
  *   def init()        -- once, after the script loads
+ *   def pre_render(frame) -- BEFORE the core runs `frame` (optional)
  *   def tick(frame)   -- once per emulated frame; draw the whole scene
  *   def event(kind)   -- host lifecycle events (AB_EVENT numbers)
  *
@@ -43,7 +44,7 @@ void ab_profiles_rb_shutdown(void);
 
 static mrb_state *mrb = NULL;
 static char g_error[512];
-static int g_has_tick = 0, g_has_event = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
 
 static void set_error(const char *message) {
   size_t n = strlen(message);
@@ -410,6 +411,17 @@ static mrb_value ab_m_input(mrb_state *m, mrb_value self) {
   return mrb_int_value(m, ab_input_state((int32_t)a, (int32_t)b, (int32_t)c, (int32_t)d));
 }
 
+/* AB.input_override(port, device, index, id, value) -> accepted?
+ * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * else. Same argument shape as AB.input, plus the value the CORE should see. */
+static mrb_value ab_m_input_override(mrb_state *m, mrb_value self) {
+  mrb_int a, b, c, d, v;
+  mrb_get_args(m, "iiiii", &a, &b, &c, &d, &v);
+  (void)self;
+  return mrb_bool_value(ab_input_override((int32_t)a, (int32_t)b, (int32_t)c,
+                                          (int32_t)d, (int32_t)v) != 0);
+}
+
 static mrb_value ab_m_log(mrb_state *m, mrb_value self) {
   const char *s; mrb_int n;
   mrb_get_args(m, "s", &s, &n);
@@ -687,6 +699,7 @@ static const ab_binding AB_FUNCS[] = {
   { "elapsed_ms", ab_m_elapsed_ms, MRB_ARGS_NONE() },
   { "delta_ms", ab_m_delta_ms, MRB_ARGS_NONE() },
   { "input", ab_m_input, MRB_ARGS_ARG(1, 3) },
+  { "input_override", ab_m_input_override, MRB_ARGS_REQ(5) },
   { "log", ab_m_log, MRB_ARGS_REQ(1) },
   { "region", ab_m_region, MRB_ARGS_REQ(1) },
   { "region_find_id", ab_m_region_find_id, MRB_ARGS_REQ(1) },
@@ -750,7 +763,13 @@ static void define_ab_module(mrb_state *m) {
   }, BTN[] = {
     { "B", 0 }, { "Y", 1 }, { "SELECT", 2 }, { "START", 3 },
     { "UP", 4 }, { "DOWN", 5 }, { "LEFT", 6 }, { "RIGHT", 7 },
-    { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 }, { "MASK", 256 },
+    { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 },
+    { "L2", 12 }, { "R2", 13 }, { "L3", 14 }, { "R3", 15 }, { "MASK", 256 },
+  }, ANALOG[] = {
+    /* AB.input(port, AB::DEVICE[:ANALOG], index, id):
+     * sticks: index LEFT/RIGHT, id X/Y -> -32768..32767
+     * triggers: index BUTTON, id AB::BTN[:L2] / AB::BTN[:R2] -> 0..32767 */
+    { "LEFT", 0 }, { "RIGHT", 1 }, { "BUTTON", 2 }, { "X", 0 }, { "Y", 1 },
   };
   /* AB::GAME: pass as a texture handle to sample the LIVE GAME FRAME, e.g.
    * AB.quad(corners, AB::GAME) maps the running game onto a tilted plane. */
@@ -760,6 +779,7 @@ static void define_ab_module(mrb_state *m) {
   define_const_hash(m, ab, "SAMPLE", SAMPLE, (int)(sizeof(SAMPLE) / sizeof(SAMPLE[0])));
   define_const_hash(m, ab, "DEVICE", DEVICE, (int)(sizeof(DEVICE) / sizeof(DEVICE[0])));
   define_const_hash(m, ab, "BTN", BTN, (int)(sizeof(BTN) / sizeof(BTN[0])));
+  define_const_hash(m, ab, "ANALOG", ANALOG, (int)(sizeof(ANALOG) / sizeof(ANALOG[0])));
 }
 
 /* -------------------------------------------------------- script loading -- */
@@ -809,6 +829,7 @@ static int load_script(void) {
 
   g_has_tick = top_level_defines(mrb, "tick");
   g_has_event = top_level_defines(mrb, "event");
+  g_has_pre_render = top_level_defines(mrb, "pre_render");
   if (!g_has_tick) {
     set_error("ruby runtime: main.rb must define a top-level method tick(frame)");
     return 0;
@@ -824,7 +845,7 @@ static int load_script(void) {
 
 static void boot(void) {
   if (mrb) { mrb_close(mrb); mrb = NULL; }
-  g_has_tick = g_has_event = 0;
+  g_has_tick = g_has_event = g_has_pre_render = 0;
   g_error[0] = 0;
   mrb = mrb_open();
   if (!mrb) { set_error("ruby runtime: mrb_open failed"); return; }
@@ -836,8 +857,11 @@ static void boot(void) {
 
 /* ------------------------------------------------------------ entrypoints -- */
 
+/* 2, not 1: this runtime imports input_override, so it cannot instantiate on
+ * a pre-ABI-2 host anyway -- reporting 2 turns that LinkError into the
+ * versioned refusal the spec promises. */
 AB_EXPORT("ab_abi_version")
-int32_t ab_abi_version(void) { return 1; }
+int32_t ab_abi_version(void) { return AB_ABI_VERSION; }
 
 AB_EXPORT("ab_init")
 int32_t ab_init(uint32_t descriptor) {
@@ -849,6 +873,26 @@ int32_t ab_init(uint32_t descriptor) {
   boot();
   return 0; /* 0 = success. A script error is NOT an init failure: the error
              * state still wants ticks so it can display itself. */
+}
+
+/* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
+ * and skips the per-frame ab_pre_render call entirely when the script defines
+ * no hook. */
+AB_EXPORT("ab_pre_render_defined")
+int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+
+AB_EXPORT("ab_pre_render")
+int32_t ab_pre_render(uint64_t frame) {
+  /* No error panel here: pre_render runs before the frame, tick() owns the
+   * screen. A broken script already shows its panel there. Arena save/restore
+   * for the same reason tick does it: 60 unrestored calls a second overflow
+   * the GC arena in under a minute. */
+  if (g_error[0] || !mrb || !g_has_pre_render) return 0;
+  int ai = mrb_gc_arena_save(mrb);
+  mrb_funcall(mrb, mrb_top_self(mrb), "pre_render", 1, mrb_int_value(mrb, (mrb_int)frame));
+  guard("pre_render()");
+  mrb_gc_arena_restore(mrb, ai);
+  return 0;
 }
 
 AB_EXPORT("ab_tick")

@@ -6,9 +6,11 @@
  * the bezel is edit main.py + reload, with no compiler in the loop.
  *
  * Script contract (module-level functions, all optional except tick):
- *   def init():        -- once, after the script loads
- *   def tick(frame):   -- once per emulated frame; draw the whole scene
- *   def event(kind):   -- host lifecycle events (ab.EVENT.* values)
+ *   def init():              -- once, after the script loads
+ *   def pre_render(frame):   -- BEFORE the core runs `frame`; write regions /
+ *                               ab.input_override to shape the frame to come
+ *   def tick(frame):         -- once per emulated frame; draw the whole scene
+ *   def event(kind):         -- host lifecycle events (ab.EVENT.* values)
  *
  * The import surface arrives as the `ab` module, in a pygame-flavoured
  * shape: familiar, not compatible. That phrasing is deliberate and matches
@@ -59,7 +61,7 @@ static char g_heap[GC_HEAP_BYTES];
 
 static char g_error[512];
 static int g_booted = 0;               /* MicroPython initialised */
-static int g_has_tick = 0, g_has_event = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
 
 static void set_error(const char *message) {
   size_t n = strlen(message);
@@ -486,6 +488,16 @@ static mp_obj_t ab_input_fn(size_t n, const mp_obj_t *a) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_input_obj, 1, 4, ab_input_fn);
 
+/* input_override(port, device, index, id, value) -> accepted?
+ * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * else. Same argument shape as ab.input, plus the value the CORE should see. */
+static mp_obj_t ab_input_override_fn(size_t n, const mp_obj_t *a) {
+  (void)n;
+  return mp_obj_new_bool(ab_input_override(
+    arg_i(a[0]), arg_i(a[1]), arg_i(a[2]), arg_i(a[3]), arg_i(a[4])) != 0);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_input_override_obj, 5, 5, ab_input_override_fn);
+
 static mp_obj_t ab_log_fn(mp_obj_t msg) {
   size_t n = 0;
   const char *s = arg_str(msg, &n);
@@ -621,8 +633,13 @@ static const int SAMPLE_VALUES[] = { 0, 1 };
 static const char *const DEVICE_NAMES[] = { "JOYPAD", "ANALOG" };
 static const int DEVICE_VALUES[] = { 1, 5 };
 static const char *const BTN_NAMES[] = { "B", "Y", "SELECT", "START", "UP", "DOWN",
-  "LEFT", "RIGHT", "A", "X", "L", "R", "MASK" };
-static const int BTN_VALUES[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 256 };
+  "LEFT", "RIGHT", "A", "X", "L", "R", "L2", "R2", "L3", "R3", "MASK" };
+static const int BTN_VALUES[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 256 };
+/* ab.input(port, ab.DEVICE['ANALOG'], index, id):
+ * sticks: index LEFT/RIGHT, id X/Y -> -32768..32767
+ * triggers: index BUTTON, id ab.BTN['L2'] / ab.BTN['R2'] -> 0..32767 */
+static const char *const ANALOG_NAMES[] = { "LEFT", "RIGHT", "BUTTON", "X", "Y" };
+static const int ANALOG_VALUES[] = { 0, 1, 2, 0, 1 };
 
 /* The module dict is built at boot so the constant dicts can be real dicts
  * (a script may want ab.BTN['START'] or ab.BTN.get(name)). */
@@ -680,6 +697,7 @@ static mp_obj_t build_ab_module(void) {
   ADD("elapsed_ms", ab_elapsed_ms_obj);
   ADD("delta_ms", ab_delta_ms_obj);
   ADD("input", ab_input_obj);
+  ADD("input_override", ab_input_override_obj);
   ADD("log", ab_log_obj);
   ADD("region", ab_region_obj);
   ADD("region_find_id", ab_region_find_id_obj);
@@ -707,7 +725,8 @@ static mp_obj_t build_ab_module(void) {
   ab_module_add(d, "FIT", make_consts(FIT_NAMES, FIT_VALUES, 4));
   ab_module_add(d, "SAMPLE", make_consts(SAMPLE_NAMES, SAMPLE_VALUES, 2));
   ab_module_add(d, "DEVICE", make_consts(DEVICE_NAMES, DEVICE_VALUES, 2));
-  ab_module_add(d, "BTN", make_consts(BTN_NAMES, BTN_VALUES, 13));
+  ab_module_add(d, "BTN", make_consts(BTN_NAMES, BTN_VALUES, 17));
+  ab_module_add(d, "ANALOG", make_consts(ANALOG_NAMES, ANALOG_VALUES, 5));
   return d;
 }
 
@@ -773,6 +792,7 @@ static int load_script(void) {
 
   g_has_tick = script_fn("tick") != MP_OBJ_NULL;
   g_has_event = script_fn("event") != MP_OBJ_NULL;
+  g_has_pre_render = script_fn("pre_render") != MP_OBJ_NULL;
   if (!g_has_tick) {
     set_error("python runtime: main.py must define a function tick(frame)");
     return 0;
@@ -788,7 +808,7 @@ static void boot(void) {
     mp_deinit();
     g_booted = 0;
   }
-  g_has_tick = g_has_event = 0;
+  g_has_tick = g_has_event = g_has_pre_render = 0;
   g_script_globals = NULL;
 
   mp_stack_ctrl_init();
@@ -823,8 +843,11 @@ static void boot(void) {
 
 /* ------------------------------------------------------------ entrypoints -- */
 
+/* 2, not 1: this runtime imports input_override, so it cannot instantiate on
+ * a pre-ABI-2 host anyway -- reporting 2 turns that LinkError into the
+ * versioned refusal the spec promises. */
 AB_EXPORT("ab_abi_version")
-int32_t ab_abi_version(void) { return 1; }
+int32_t ab_abi_version(void) { return AB_ABI_VERSION; }
 
 AB_EXPORT("ab_init")
 int32_t ab_init(uint32_t descriptor) {
@@ -836,6 +859,21 @@ int32_t ab_init(uint32_t descriptor) {
   boot();
   return 0; /* 0 = success. A script error is NOT an init failure: the error
              * state still wants ticks so it can display itself. */
+}
+
+/* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
+ * and skips the per-frame ab_pre_render call entirely when the script defines
+ * no hook. */
+AB_EXPORT("ab_pre_render_defined")
+int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+
+AB_EXPORT("ab_pre_render")
+int32_t ab_pre_render(uint64_t frame) {
+  /* No error panel here: pre_render runs before the frame, tick() owns the
+   * screen. A broken script already shows its panel there. */
+  if (g_error[0] || !g_booted || !g_has_pre_render) return 0;
+  call_script("pre_render", mp_obj_new_int_from_ull(frame), 1);
+  return 0;
 }
 
 AB_EXPORT("ab_tick")

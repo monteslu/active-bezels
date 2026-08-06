@@ -6,6 +6,10 @@
 #   def init          optional -- once, after the script loads
 #   def tick(frame)   REQUIRED -- once per emulated frame; draw everything
 #   def event(kind)   optional -- host lifecycle (see AB::EVENT)
+#   def pre_render(frame) optional -- BEFORE the core runs `frame`:
+#     write regions / AB.input_override(port, dev, idx, id, value) to shape
+#     the frame about to run (overrides clear each frame; AB.input still
+#     reports the physical pad)
 #
 # A bezel owns the WHOLE 1920x1080 picture, including where the game goes.
 # Coordinates are always on that logical grid no matter the output size.

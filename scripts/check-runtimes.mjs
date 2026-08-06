@@ -64,13 +64,15 @@ const REQUIRED_EXPORTS = Object.entries(abi.guestExports)
   .map(([name]) => name);
 
 /*
- * The five ABI functions the task contract names. ab_event and ab_shutdown
- * are optional in abi.json (a guest may omit them), but every runtime we
- * SHIP implements all five, because a runtime that cannot receive an event
- * or clean up is not a complete host for a scripting language. So the bar
- * for runtimes/ is stricter than the bar for an arbitrary guest.
+ * The ABI functions the task contract names. ab_event, ab_shutdown,
+ * ab_pre_render and ab_pre_render_defined are optional in abi.json (a guest
+ * may omit them), but every runtime we SHIP implements all of these, because
+ * a runtime that cannot receive an event, clean up, or route a script's
+ * pre_render hook is not a complete host for a scripting language. So the
+ * bar for runtimes/ is stricter than the bar for an arbitrary guest.
  */
-const RUNTIME_EXPORTS = ['ab_abi_version', 'ab_init', 'ab_tick', 'ab_event', 'ab_shutdown'];
+const RUNTIME_EXPORTS = ['ab_abi_version', 'ab_init', 'ab_tick', 'ab_event', 'ab_shutdown',
+  'ab_pre_render', 'ab_pre_render_defined'];
 
 const WASM_TYPE = { 0x7f: 'i32', 0x7e: 'i64', 0x7d: 'f32', 0x7c: 'f64' };
 
@@ -305,7 +307,7 @@ function main() {
       const imports = r.modules.length ? r.modules.join(',') : '(none)';
       console.log(
         `${r.name.padEnd(w)}  ${kb(r.size).padStart(8)}  ${(r.budget ? kb(r.budget) : '-').padStart(8)}  `
-        + `${String(r.importCount ?? 0).padStart(3)} ${imports.padEnd(10)}  ${String(r.exports.length)}/5      ${status}`,
+        + `${String(r.importCount ?? 0).padStart(3)} ${imports.padEnd(10)}  ${String(r.exports.length)}/${RUNTIME_EXPORTS.length}      ${status}`,
       );
     }
     const warned = results.filter((r) => r.warnings?.length);

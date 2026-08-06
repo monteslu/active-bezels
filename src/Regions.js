@@ -1,5 +1,14 @@
 import { resolveCoreModule, coreHeap, coreMemoryObject } from './Host.js';
 
+// Regions whose getter FILLS A BUFFER at call time rather than returning a
+// pointer to live memory (or whose pointer needs re-resolving per tick).
+// Hoisted to module level because CORE_REGIONS below derives per-region
+// flags from membership, and that map runs before the class body exists.
+// The full why-per-id story is on the SNAPSHOT_IDS class property below.
+const SNAPSHOT_IDS = new Set([0x103, 0x104, 0x105, 0x108, 0x109, 0x10A, 0x10B, 0x10C, 0x10D, 0x10E, 0x10F, 0x110, 0x111, 0x112, 0x113, 0x114, 0x115, 0x116, 0x117, 0x118,
+  0x127, 0x128, 0x129, 0x12A, 0x12B, 0x12C, 0x1B0, 0x1B1, 0x1B2, 0x1B3, 0x1B4, 0x1B5,
+  0x147, 0x148, 0x149, 0x14A, 0x14B, 0x14C]);
+
 // Flags are part of active-bezel-1, not libretro:
 //   1 = readable, 2 = writable, 4 = live core memory, 8 = immutable.
 //
@@ -159,7 +168,20 @@ export const CORE_REGIONS = [
   // "retain our own prior composite" has no usable prior on a first compose
   // and a CORRUPT one on a stale compose. Same silent-fallback trap as 0x1c6.
   [0x1c8, 'msx_fb_tail'],
-].map(([id, name]) => ({ id, name, flags: 1 | 2 | 4 }));
+].map(([id, name]) => ({
+  id,
+  name,
+  /*
+   * Honest flags: SNAPSHOT regions (fill-a-buffer getters and per-frame
+   * capture planes) do not carry the WRITE bit. A write to one lands in a
+   * staging buffer the core never reads back -- it "succeeds" and does
+   * nothing, which with pre_render in the ABI would be the worst kind of
+   * silent no-op. write() gates on the flag, so those writes now return 0
+   * and a guest can tell "I changed the machine" from "I changed a copy".
+   * Live-pointer regions (system_ram, OAM, nametables, cart RAM...) keep it.
+   */
+  flags: 1 | 4 | (SNAPSHOT_IDS.has(id) ? 0 : 2),
+}));
 
 export class ActiveBezelRegions {
   constructor(host, romBytes) {
@@ -222,9 +244,7 @@ export class ActiveBezelRegions {
   // in practice (the coin-catch smoke rendered pure black while the same
   // regions read correctly over MCP). Re-resolving per tick fixed it there
   // and fixes it here.
-  static SNAPSHOT_IDS = new Set([0x103, 0x104, 0x105, 0x108, 0x109, 0x10A, 0x10B, 0x10C, 0x10D, 0x10E, 0x10F, 0x110, 0x111, 0x112, 0x113, 0x114, 0x115, 0x116, 0x117, 0x118,
-    0x127, 0x128, 0x129, 0x12A, 0x12B, 0x12C, 0x1B0, 0x1B1, 0x1B2, 0x1B3, 0x1B4, 0x1B5,
-    0x147, 0x148, 0x149, 0x14A, 0x14B, 0x14C]);
+  static SNAPSHOT_IDS = SNAPSHOT_IDS;
 
   refreshSnapshots() {
     const mod = resolveCoreModule(this.host);

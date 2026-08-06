@@ -132,12 +132,15 @@ to shade two million CPU pixels. `runtime.internalResolution` selects a reusable
 Each emulation tick is:
 
 1. Apply current input.
-2. Run the libretro core.
-3. Expose the resulting live memory and core framebuffer.
-4. Call `ab_tick(frame)`.
-5. Execute the guest's complete composition.
-6. Apply the selected picture effect at its declared scope.
-7. Publish the same final composite to SDL, screenshots, recording, and remote
+2. Call `ab_pre_render(frame)` if the guest defines it (ABI 2, opt-in) — the
+   guest may write live regions and override the input the core is about to be
+   polled with.
+3. Run the libretro core.
+4. Expose the resulting live memory and core framebuffer.
+5. Call `ab_tick(frame)`.
+6. Execute the guest's complete composition.
+7. Apply the selected picture effect at its declared scope.
+8. Publish the same final composite to SDL, screenshots, recording, and remote
    consumers.
 
 The bezel decides where the game goes. If it submits no commands at all,
@@ -192,9 +195,65 @@ Optional exports are `ab_event`, `ab_shutdown`, and the CPU framebuffer trio.
 Lifecycle events cover reset, state load, rewind jump, live configuration,
 display change, asset reload, and region relocation.
 
+### The pre_render hook (ABI 2, opt-in)
+
+```c
+int32_t ab_pre_render(uint64_t frame);   /* optional; MUST return 0 */
+```
+
+`ab_tick` observes the frame the core just produced; `ab_pre_render` shapes the
+frame the core is **about** to run. The host calls it before every core frame —
+not per compose, not per capture — after physical input is known and before the
+core polls it. The contract that makes it useful:
+
+- **Region writes land before the game's logic consumes them.** A write made in
+  `tick` is one frame late by construction; the same write in `pre_render` is
+  what the game computes with this frame. Only regions carrying the WRITE flag
+  reach the machine — snapshot-backed regions (fill-a-buffer getters, capture
+  planes) refuse writes rather than "succeeding" into a discarded copy.
+- **`input_override(port, device, index, id, value)`** replaces what the core
+  sees for this frame. It mirrors `input_state`'s signature (`id 256` writes
+  the whole 16-bit joypad mask). Overrides are cleared before every
+  `pre_render`, so a bezel re-asserts each frame — an override is one frame's
+  statement, never a sticky mode. `input_state` keeps reporting the PHYSICAL
+  pad: the game sees the override, the bezel sees the truth, so a left/right
+  swap cannot read back its own output and re-swap. Calls outside `pre_render`
+  are refused (logged once): a tick-time override would ambiguously target the
+  next frame and then be discarded.
+  This is also how a bezel **claims** a button the game uses: read the physical
+  state, act on it, and mask the bit out so the core never sees it.
+- **Frame 0 is included.** The first `pre_render` runs against post-reset,
+  pre-execution RAM — well-defined, but not yet initialized by the game. A
+  bezel that needs initialized structures gates on the frame number or a RAM
+  signature; the host never steps the core behind the consumer's back to
+  "warm up".
+- Region **reads** here see post-previous-frame state; snapshot regions are not
+  re-refreshed between `tick(N-1)` and `pre_render(N)` — they are the same
+  machine instant.
+- The return value is reserved: return 0. Nonzero is ignored today and logged
+  once.
+
+A guest that exports `ab_pre_render` (or imports `input_override`) must report
+`2` from `ab_abi_version`; hosts speaking only ABI 1 then refuse it loudly at
+load instead of running it with the hook silently never called. A guest using
+neither may keep reporting 1 and loads everywhere. The interpreter runtimes
+always export the hook and answer "does the script define it" through
+`ab_pre_render_defined()`, so a script without `pre_render` costs nothing per
+frame.
+
+One caveat for debuggers: `pre_render` writes are host-side pokes into core
+memory. Core-side write breakpoints/watchpoints hook CPU access and will NOT
+see them — game state changing "with no writer" is the signature of an attached
+state-editing bezel. Hosts surface `preRender.calls` in the runtime status for
+exactly this reason.
+
 The host imports include:
 
-- Display geometry, ABI version and current controller state.
+- Display geometry, ABI version and current controller state — the joypad
+  device reports the digital mask, the analog device (5) reports stick
+  positions (index 0/1, id 0=X/1=Y, −32768..32767) and trigger pressure
+  (index 2, id 12/13, 0..32767) where the host tracks them; `input_override`
+  (ABI 2, pre_render only) replaces what the core sees.
 - Region enumeration, stable IDs, byte reads/writes, size, flags, and live
   offsets, plus a generation counter after reset/state/rewind relocation.
 - Typed boolean/number/string configuration.
@@ -439,14 +498,21 @@ All four runtimes also carry the platform redraw profiles (`nes`, `gb`,
 
 ### The script contract
 
-Three functions, only one required. The names are the same in all four
+Four functions, only one required. The names are the same in all four
 languages:
 
 ```
-init()        optional -- once, after the script loads
-tick(frame)   REQUIRED -- once per emulated frame; draw the whole scene
-event(kind)   optional -- host lifecycle events (see the EVENT table)
+init()              optional -- once, after the script loads
+pre_render(frame)   optional -- BEFORE the core runs frame `frame`; write
+                    regions / override input to shape the frame about to run
+tick(frame)         REQUIRED -- once per emulated frame; draw the whole scene
+event(kind)         optional -- host lifecycle events (see the EVENT table)
 ```
+
+`pre_render` follows the ABI-2 hook contract above: overrides clear before
+each call, `input(...)` still reports the physical pad, `input_override(...)`
+is only honored here, and frame 0 sees post-reset RAM. Defining it is the only
+opt-in — a script without it costs nothing per frame.
 
 ### The API
 
@@ -465,9 +531,9 @@ draw_texture_rect, image, image_data`
 region_offset, region_generation, region_count, read_u8, write_u8, read,
 read_u16, read_u24, read_u32, game_width, game_height, game_pixel`
 **Host** `logical_width, logical_height, physical_width, physical_height,
-elapsed_ms, delta_ms, input, log, asset, config_bool, config_number,
-config_string, rgb`
-**Constants** `EVENT, FIT, SAMPLE, DEVICE, BTN`
+elapsed_ms, delta_ms, input, input_override, log, asset, config_bool,
+config_number, config_string, rgb`
+**Constants** `EVENT, FIT, SAMPLE, DEVICE, BTN, ANALOG`
 
 Language-shaped differences, all of them deliberate:
 

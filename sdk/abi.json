@@ -1,6 +1,6 @@
 {
   "name": "active-bezel",
-  "version": 1,
+  "version": 2,
   "logicalCanvas": [
     1920,
     1080
@@ -28,6 +28,18 @@
       ],
       "result": null,
       "required": true
+    },
+    "ab_pre_render": {
+      "params": [
+        "i64"
+      ],
+      "result": "i32",
+      "required": false
+    },
+    "ab_pre_render_defined": {
+      "params": [],
+      "result": "i32",
+      "required": false
     },
     "ab_event": {
       "params": [
@@ -81,6 +93,16 @@
     },
     "input_state": {
       "params": [
+        "i32",
+        "i32",
+        "i32",
+        "i32"
+      ],
+      "result": "i32"
+    },
+    "input_override": {
+      "params": [
+        "i32",
         "i32",
         "i32",
         "i32",

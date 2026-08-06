@@ -596,13 +596,17 @@ test('machine-readable ABI schema covers the runtime contract', async () => {
   const abi = JSON.parse(await fs.readFile(
     path.resolve(here, '../sdk/abi.json'), 'utf8',
   ));
-  assert.equal(abi.version, 1);
+  assert.equal(abi.version, 2);
   for (const name of ['ab_abi_version', 'ab_init', 'ab_tick']) {
     assert.equal(abi.guestExports[name].required, true);
   }
+  /* ABI 2 additions stay OPTIONAL: a version-1 guest must keep loading. */
+  for (const name of ['ab_pre_render', 'ab_pre_render_defined']) {
+    assert.equal(abi.guestExports[name].required, false, `${name} must be optional`);
+  }
   for (const name of [
-    'input_state', 'region_generation', 'region_read_u8', 'region_write_u8',
-    'command_draw_game', 'command_draw_texture',
+    'input_state', 'input_override', 'region_generation', 'region_read_u8',
+    'region_write_u8', 'command_draw_game', 'command_draw_texture',
   ]) assert.ok(abi.hostImports[name], `ABI import ${name}`);
 });
 
@@ -1272,6 +1276,120 @@ for (const spec of RUNTIMES) {
     const after = runtime.compositor.commands.find((c) => c.kind === 'rect');
     assert.equal(after?.rgba >>> 0, 0x00ff00ff,
       `${spec.lang}: must be green after reloading the edited script`);
+  });
+
+  test(`the ${spec.lang} runtime routes pre_render: writes land, overrides gate on the hook`, async (t) => {
+    if (!await runtimeAvailable(spec)) return t.skip(`${spec.lang} runtime not built`);
+    /*
+     * The whole ABI-2 chain in one script: pre_render writes live RAM (must
+     * reach the core heap) and overrides input (must reach the inputManager,
+     * AFTER its per-frame clear); the SAME call from tick must be refused --
+     * a tick-time override would target the next frame and then be discarded,
+     * so it fails loudly instead of half-working. The scripts assert both
+     * outcomes themselves and throw onto the error panel on any mismatch.
+     */
+    const script = {
+      lua: `
+        function pre_render(frame)
+          local ram = ab.region('system_ram')
+          ab.write_u8(ram, 7, 0x77)
+          assert(ab.input_override(0, ab.DEVICE.JOYPAD, 0, ab.BTN.MASK, 0x40) == true,
+                 'override must be accepted in pre_render')
+          assert(ab.BTN.L2 == 12 and ab.BTN.R3 == 15 and ab.ANALOG.BUTTON == 2)
+        end
+        function tick(frame)
+          ab.clear(0x000000ff)
+          assert(ab.input_override(0, 1, 0, ab.BTN.MASK, 0x80) == false,
+                 'override must be refused in tick')
+        end`,
+      python: `
+def pre_render(frame):
+    ram = ab.region('system_ram')
+    ab.write_u8(ram, 7, 0x77)
+    assert ab.input_override(0, ab.DEVICE['JOYPAD'], 0, ab.BTN['MASK'], 0x40) == True, 'accept in pre_render'
+    assert ab.BTN['L2'] == 12 and ab.BTN['R3'] == 15 and ab.ANALOG['BUTTON'] == 2
+def tick(frame):
+    ab.clear(0x000000ff)
+    assert ab.input_override(0, 1, 0, ab.BTN['MASK'], 0x80) == False, 'refuse in tick'
+`,
+      js: `
+        function pre_render(frame) {
+          const ram = ab.region('system_ram');
+          ab.write_u8(ram, 7, 0x77);
+          if (ab.input_override(0, ab.DEVICE.JOYPAD, 0, ab.BTN.MASK, 0x40) !== true)
+            throw new Error('override must be accepted in pre_render');
+          if (ab.BTN.L2 !== 12 || ab.BTN.R3 !== 15 || ab.ANALOG.BUTTON !== 2)
+            throw new Error('constants');
+        }
+        function tick(frame) {
+          ab.clear(0x000000ff);
+          if (ab.input_override(0, 1, 0, ab.BTN.MASK, 0x80) !== false)
+            throw new Error('override must be refused in tick');
+        }`,
+      ruby: `
+def pre_render(frame)
+  ram = AB.region('system_ram')
+  AB.write_u8(ram, 7, 0x77)
+  raise 'override must be accepted in pre_render' unless AB.input_override(0, AB::DEVICE[:JOYPAD], 0, AB::BTN[:MASK], 0x40)
+  raise 'constants' unless AB::BTN[:L2] == 12 && AB::BTN[:R3] == 15 && AB::ANALOG[:BUTTON] == 2
+end
+def tick(frame)
+  AB.clear(0x000000ff)
+  raise 'override must be refused in tick' if AB.input_override(0, 1, 0, AB::BTN[:MASK], 0x80)
+end
+`,
+    }[spec.lang];
+
+    const rom = Buffer.from([9, 9, 9]);
+    const dir = await makeRuntimePackage(spec, script, rom, false);
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+    const overrides = [];
+    let cleared = 0;
+    const host = memoryHost(65);
+    const runtime = await ActiveBezelRuntime.create({
+      packagePath: dir, host, romBytes: rom, platform: 'nes',
+      outputWidth: 64, outputHeight: 36,
+      inputManager: {
+        getState: () => 0,
+        setOverride: (...args) => { overrides.push(args); return true; },
+        clearOverrides: () => { cleared++; },
+      },
+    });
+    assert.equal(runtime.status().preRender.defined, true,
+      `${spec.lang}: pre_render must be detected after script load`);
+
+    assert.equal(runtime.preFrame(3), true, `${spec.lang}: preFrame must run the hook`);
+    assert.equal(cleared, 1, `${spec.lang}: stale overrides clear before the hook, not after`);
+    assert.deepEqual(overrides, [[0, 1, 0, 256, 0x40]],
+      `${spec.lang}: the override must reach the inputManager`);
+    assert.equal(host.core.HEAPU8[1024 + 7], 0x77,
+      `${spec.lang}: a pre_render RAM write must land in the core heap`);
+
+    runtime.processFrame(new Uint8Array(4), 1, 1, 3);
+    assert.equal(overrides.length, 1,
+      `${spec.lang}: a tick-time override must never reach the inputManager`);
+    const texts = runtime.compositor.commands
+      .filter((c) => c.kind === 'text').map((c) => String(c.text));
+    assert.ok(!texts.some((s) => s.toLowerCase().includes('error')),
+      `${spec.lang}: unexpected error panel: ${texts.join(' | ')}`);
+    assert.equal(runtime.status().preRender.calls, 1);
+  });
+
+  test(`the ${spec.lang} runtime skips pre_render when the script defines none`, async (t) => {
+    if (!await runtimeAvailable(spec)) return t.skip(`${spec.lang} runtime not built`);
+    // "Not defined" must cost a cached property check per frame -- watch and
+    // breakpoint bursts step thousands of frames with the hook wired in.
+    const rom = Buffer.from([9, 9, 9]);
+    const dir = await makeRuntimePackage(spec, spec.throws, rom, false);
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+    const runtime = await ActiveBezelRuntime.create({
+      packagePath: dir, host: memoryHost(0), romBytes: rom, platform: 'nes',
+      outputWidth: 64, outputHeight: 36,
+    });
+    assert.equal(runtime.status().preRender.defined, false);
+    assert.equal(runtime.preFrame(1), false);
+    assert.equal(runtime.status().preRender.calls, 0);
   });
 }
 

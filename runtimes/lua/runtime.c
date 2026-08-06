@@ -6,9 +6,11 @@
  * bezel is edit main.lua + repack, with no compiler in the loop.
  *
  * Script contract (all globals, all optional except tick):
- *   function init()        -- once, after the script loads
- *   function tick(frame)   -- once per emulated frame; draw the whole scene
- *   function event(kind)   -- host lifecycle events (AB_EVENT numbers)
+ *   function init()              -- once, after the script loads
+ *   function pre_render(frame)   -- BEFORE the core runs `frame`; write
+ *                                   regions / ab.input_override to shape it
+ *   function tick(frame)         -- once per emulated frame; draw the scene
+ *   function event(kind)         -- host lifecycle events (AB_EVENT numbers)
  *
  * The whole ab_* import surface is exposed as the global `ab` table. Errors
  * never kill the session: they are logged, drawn on screen, and the script
@@ -50,7 +52,7 @@ void ab_runtime_writeline(void) { /* per-call log lines already break */ }
 
 static lua_State *L = NULL;
 static char g_error[512];
-static int g_has_tick = 0, g_has_event = 0;
+static int g_has_tick = 0, g_has_event = 0, g_has_pre_render = 0;
 
 /* The platform redraw profiles (`nes`/`gb`/`md`/`snes`/`msx`/`pce`).
  * All logic lives in runtimes/common/ab_profiles.c, shared with the other
@@ -293,6 +295,17 @@ static int l_input(lua_State *S) {
   lua_pushinteger(S, ab_input_state(
     (int32_t)luaL_optinteger(S, 1, 0), (int32_t)luaL_optinteger(S, 2, 1),
     (int32_t)luaL_optinteger(S, 3, 0), (int32_t)luaL_checkinteger(S, 4)));
+  return 1;
+}
+
+/* input_override(port, device, index, id, value) -> accepted?
+ * Only honored inside pre_render; the host refuses (and logs once) anywhere
+ * else. Same argument shape as ab.input, plus the value the CORE should see. */
+static int l_input_override(lua_State *S) {
+  lua_pushboolean(S, ab_input_override(
+    (int32_t)luaL_optinteger(S, 1, 0), (int32_t)luaL_optinteger(S, 2, 1),
+    (int32_t)luaL_optinteger(S, 3, 0), (int32_t)luaL_checkinteger(S, 4),
+    (int32_t)luaL_checkinteger(S, 5)) != 0);
   return 1;
 }
 
@@ -549,6 +562,7 @@ static const luaL_Reg AB_FUNCS[] = {
   { "elapsed_ms", l_elapsed_ms },
   { "delta_ms", l_delta_ms },
   { "input", l_input },
+  { "input_override", l_input_override },
   { "log", l_log },
   { "region", l_region },
   { "region_find_id", l_region_find_id },
@@ -613,6 +627,9 @@ static int load_script(void) {
   lua_getglobal(L, "event");
   g_has_event = lua_isfunction(L, -1);
   lua_pop(L, 1);
+  lua_getglobal(L, "pre_render");
+  g_has_pre_render = lua_isfunction(L, -1);
+  lua_pop(L, 1);
   if (!g_has_tick) { set_error("lua runtime: main.lua must define a global function tick(frame)"); return 0; }
 
   lua_getglobal(L, "init");
@@ -631,7 +648,7 @@ static int load_script(void) {
 
 static void boot(void) {
   if (L) { lua_close(L); L = NULL; }
-  g_has_tick = g_has_event = 0;
+  g_has_tick = g_has_event = g_has_pre_render = 0;
   L = luaL_newstate();
   if (!L) { set_error("lua runtime: luaL_newstate failed"); return; }
   /* base, string, table, math, utf8, coroutine. No io/os/package: there is
@@ -669,7 +686,13 @@ static void boot(void) {
     }, BTN[] = {
       { "B", 0 }, { "Y", 1 }, { "SELECT", 2 }, { "START", 3 },
       { "UP", 4 }, { "DOWN", 5 }, { "LEFT", 6 }, { "RIGHT", 7 },
-      { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 }, { "MASK", 256 },
+      { "A", 8 }, { "X", 9 }, { "L", 10 }, { "R", 11 },
+      { "L2", 12 }, { "R2", 13 }, { "L3", 14 }, { "R3", 15 }, { "MASK", 256 },
+    }, ANALOG[] = {
+      /* ab.input(port, ab.DEVICE.ANALOG, index, id):
+       * sticks: index LEFT/RIGHT, id X/Y -> -32768..32767
+       * triggers: index BUTTON, id ab.BTN.L2 / ab.BTN.R2 -> 0..32767 */
+      { "LEFT", 0 }, { "RIGHT", 1 }, { "BUTTON", 2 }, { "X", 0 }, { "Y", 1 },
     };
     static const struct { const char *name;
                           const void *rows; int count; } GROUPS[] = {
@@ -678,6 +701,7 @@ static void boot(void) {
       { "SAMPLE", SAMPLE, (int)(sizeof(SAMPLE) / sizeof(SAMPLE[0])) },
       { "DEVICE", DEVICE, (int)(sizeof(DEVICE) / sizeof(DEVICE[0])) },
       { "BTN", BTN, (int)(sizeof(BTN) / sizeof(BTN[0])) },
+      { "ANALOG", ANALOG, (int)(sizeof(ANALOG) / sizeof(ANALOG[0])) },
     };
     for (unsigned g = 0; g < sizeof(GROUPS) / sizeof(GROUPS[0]); g++) {
       const struct { const char *name; lua_Integer value; } *rows = GROUPS[g].rows;
@@ -696,8 +720,11 @@ static void boot(void) {
 
 /* ------------------------------------------------------------ entrypoints -- */
 
+/* 2, not 1: this runtime imports input_override, so it cannot instantiate on
+ * a pre-ABI-2 host anyway -- reporting 2 turns that LinkError into the
+ * versioned refusal the spec promises. */
 AB_EXPORT("ab_abi_version")
-int32_t ab_abi_version(void) { return 1; }
+int32_t ab_abi_version(void) { return AB_ABI_VERSION; }
 
 AB_EXPORT("ab_init")
 int32_t ab_init(uint32_t descriptor) {
@@ -709,6 +736,27 @@ int32_t ab_init(uint32_t descriptor) {
   boot();
   return 0; /* 0 = success. A script error is NOT an init failure: the error
              * state still wants ticks so it can display itself. */
+}
+
+/* The host reads this after ab_init AND after every ASSETS_RELOADED reboot,
+ * and skips the per-frame ab_pre_render call entirely when the script defines
+ * no hook -- watch/breakpoint bursts step thousands of frames, so "not
+ * defined" has to cost a cached property check, not an interpreter call. */
+AB_EXPORT("ab_pre_render_defined")
+int32_t ab_pre_render_defined(void) { return g_has_pre_render; }
+
+AB_EXPORT("ab_pre_render")
+int32_t ab_pre_render(uint64_t frame) {
+  /* No error panel here: pre_render runs before the frame, tick() owns the
+   * screen. A broken script already shows its panel there. */
+  if (g_error[0] || !L || !g_has_pre_render) return 0;
+  lua_getglobal(L, "pre_render");
+  lua_pushinteger(L, (lua_Integer)frame);
+  if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+    set_error(lua_tostring(L, -1) ? lua_tostring(L, -1) : "pre_render() failed");
+    lua_pop(L, 1);
+  }
+  return 0;
 }
 
 AB_EXPORT("ab_tick")
