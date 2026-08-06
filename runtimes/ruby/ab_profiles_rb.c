@@ -198,12 +198,24 @@ static mrb_value prof_clear(mrb_state *m, mrb_value self) {
   return mrb_nil_value();
 }
 
+/* Reads x/y/scale plus the optional layer-split surfaces. Raises when the
+ * caller asks for a split this profile cannot do, rather than quietly
+ * drawing the whole picture into both surfaces (which looks like it
+ * worked). */
 static void read_view(mrb_state *m, mrb_value opts, ab_prof_view *v,
-                      double def_scale) {
+                      double def_scale, ab_prof_id prof) {
   v->x = 0; v->y = 0; v->scale = def_scale;
+  v->bg_surface = 0; v->spr_surface = 0;
   ropt_num(m, opts, "x", &v->x);
   ropt_num(m, opts, "y", &v->y);
   ropt_num(m, opts, "scale", &v->scale);
+  v->bg_surface  = ropt_int(m, opts, "bg_surface", 0);
+  v->spr_surface = ropt_int(m, opts, "spr_surface", 0);
+  if ((v->bg_surface || v->spr_surface) && !ab_prof_layers_supported(prof))
+    mrb_raise(m, exc_runtime(m),
+      "draw: bg_surface/spr_surface not supported on this profile "
+      "(its layers are resolved per pixel by the core, so there is "
+      "no separate sprite batch to route)");
 }
 
 static mrb_value opt_hash_arg(mrb_state *m) {
@@ -226,7 +238,7 @@ static mrb_value nes_draw(mrb_state *m, mrb_value self) {
   ensure_bound(m, &RB_PROFS[AB_PROF_NES]);
   mrb_value opts = opt_hash_arg(m);
   ab_prof_view v;
-  read_view(m, opts, &v, 4.0);
+  read_view(m, opts, &v, 4.0, AB_PROF_NES);
   ab_prof_nes_result r;
   const char *err = NULL;
   if (!ab_prof_nes_draw(&v, &r, &err)) return mrb_nil_value();
@@ -259,7 +271,7 @@ static mrb_value gb_draw(mrb_state *m, mrb_value self) {
   ensure_bound(m, &RB_PROFS[AB_PROF_GB]);
   mrb_value opts = opt_hash_arg(m);
   ab_prof_view v;
-  read_view(m, opts, &v, 7.0);
+  read_view(m, opts, &v, 7.0, AB_PROF_GB);
   ab_prof_gb_result r;
   const char *err = NULL;
   if (!ab_prof_gb_draw(&v, &r, &err)) return mrb_nil_value();
@@ -292,7 +304,7 @@ static mrb_value md_draw(mrb_state *m, mrb_value self) {
   ensure_bound(m, &RB_PROFS[AB_PROF_MD]);
   mrb_value opts = opt_hash_arg(m);
   ab_prof_view v;
-  read_view(m, opts, &v, 4.0);
+  read_view(m, opts, &v, 4.0, AB_PROF_MD);
   ab_prof_md_result r;
   const char *err = NULL;
   if (!ab_prof_md_draw(&v, &r, &err)) return mrb_nil_value();
@@ -347,7 +359,7 @@ static mrb_value msx_draw(mrb_state *m, mrb_value self) {
   ensure_bound(m, &RB_PROFS[AB_PROF_MSX]);
   mrb_value opts = opt_hash_arg(m);
   ab_prof_msx_view v;
-  read_view(m, opts, &v.v, 3.0);
+  read_view(m, opts, &v.v, 3.0, AB_PROF_MSX);
   v.fit_width = ropt_bool(m, opts, "fit_width", 0);
   ab_prof_msx_result r;
   const char *err = NULL;

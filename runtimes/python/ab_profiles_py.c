@@ -175,13 +175,26 @@ static mp_obj_t prof_clear(const pyp_desc *d) {
   return mp_const_none;
 }
 
+/* Reads x/y/scale plus the optional layer-split surfaces. Raises when the
+ * caller asks for a split this profile cannot do, rather than quietly
+ * drawing the whole picture into both surfaces (which looks like it
+ * worked). Python raises on profile config errors by convention -- see the
+ * language-differences table in the runtime READMEs. */
 static void read_view(size_t n, const mp_obj_t *a, ab_prof_view *v,
-                      double def_scale) {
+                      double def_scale, ab_prof_id prof) {
   v->x = 0; v->y = 0; v->scale = def_scale;
+  v->bg_surface = 0; v->spr_surface = 0;
   if (n > 0) {
     opt_num(a[0], "x", &v->x);
     opt_num(a[0], "y", &v->y);
     opt_num(a[0], "scale", &v->scale);
+    v->bg_surface  = opt_int(a[0], "bg_surface", 0);
+    v->spr_surface = opt_int(a[0], "spr_surface", 0);
+    if ((v->bg_surface || v->spr_surface) && !ab_prof_layers_supported(prof))
+      mp_raise_msg_varg(&mp_type_ValueError,
+        MP_ERROR_TEXT("draw: bg_surface/spr_surface not supported on this "
+                      "profile (its layers are resolved per pixel by the "
+                      "core, so there is no separate sprite batch to route)"));
   }
 }
 
@@ -208,7 +221,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0(nes_clear_obj, nes_clear_fn);
 static mp_obj_t nes_draw_fn(size_t n, const mp_obj_t *a) {
   ensure_bound(&PY_PROFS[AB_PROF_NES]);
   ab_prof_view v;
-  read_view(n, a, &v, 4.0);
+  read_view(n, a, &v, 4.0, AB_PROF_NES);
   ab_prof_nes_result r;
   const char *err = NULL;
   if (!ab_prof_nes_draw(&v, &r, &err)) return mp_const_none;
@@ -251,7 +264,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0(gb_clear_obj, gb_clear_fn);
 static mp_obj_t gb_draw_fn(size_t n, const mp_obj_t *a) {
   ensure_bound(&PY_PROFS[AB_PROF_GB]);
   ab_prof_view v;
-  read_view(n, a, &v, 7.0);
+  read_view(n, a, &v, 7.0, AB_PROF_GB);
   ab_prof_gb_result r;
   const char *err = NULL;
   if (!ab_prof_gb_draw(&v, &r, &err)) return mp_const_none;
@@ -294,7 +307,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0(md_clear_obj, md_clear_fn);
 static mp_obj_t md_draw_fn(size_t n, const mp_obj_t *a) {
   ensure_bound(&PY_PROFS[AB_PROF_MD]);
   ab_prof_view v;
-  read_view(n, a, &v, 4.0);
+  read_view(n, a, &v, 4.0, AB_PROF_MD);
   ab_prof_md_result r;
   const char *err = NULL;
   if (!ab_prof_md_draw(&v, &r, &err)) return mp_const_none;
@@ -358,7 +371,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0(msx_mode_obj, msx_mode_fn);
 static mp_obj_t msx_draw_fn(size_t n, const mp_obj_t *a) {
   ensure_bound(&PY_PROFS[AB_PROF_MSX]);
   ab_prof_msx_view v;
-  read_view(n, a, &v.v, 3.0);
+  read_view(n, a, &v.v, 3.0, AB_PROF_MSX);
   v.fit_width = n > 0 ? opt_bool(a[0], "fit_width", 0) : 0;
   ab_prof_msx_result r;
   const char *err = NULL;

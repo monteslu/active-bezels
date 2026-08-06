@@ -209,9 +209,9 @@ transparent overhang in source pixels).
 
 Draw options and results per platform:
 
-- `nes.draw{x, y, scale}` ->
+- `nes.draw{x, y, scale, bg_surface=, spr_surface=}` ->
   `{bg_quads, spr_quads, hd_drawn, sprites_replaced}`
-- `gb.draw{x, y, scale}` -> the same shape as NES
+- `gb.draw{x, y, scale, bg_surface=, spr_surface=}` -> the same shape as NES
 - `md.draw{x, y, scale}` -> `{quads, hd_drawn, sprites_replaced}`
   (Genesis, SMS and Game Gear all bind through this one profile)
 - `msx.draw{x, y, scale, fit_width=}` -> `{quads, hd_drawn,
@@ -248,6 +248,58 @@ substitution:
   `{w, h, m7start, m7stop, plane_rebuilt}` -- the whole HD Mode 7 tick:
   streaming plane texture, palette animation, per-line UV mesh, sprite
   runs, and the optional side-by-side compare view
+
+### The layer split: shading the world and the actors differently
+
+`nes.draw` and `gb.draw` take two optional surface handles:
+
+```lua
+local r = nes.draw{ x = GAME_X, y = 0, scale = SCALE,
+                    bg_surface = surf_bg, spr_surface = surf_spr }
+ab.surface_filter(surf_bg,  surf_bg,  MELT)   -- the world liquefies
+ab.surface_filter(surf_spr, surf_spr, GLOW)   -- the actors stay sharp
+ab.draw_texture(surf_bg,  0, 0, 1920, 1080)
+ab.draw_texture(surf_spr, 0, 0, 1920, 1080)
+```
+
+A redraw already emits the background and the sprites as separate
+batches; these route them to separate offscreen surfaces in ONE draw --
+one frame read, one sprite evaluation. That is the difference from
+calling `draw` twice with layer toggles, which re-does both for what is a
+single machine state.
+
+What it buys: the two layers can get *different* effects. A shader over
+the composited frame sees one flat bitmap -- the character and the wall
+behind them are the same pixels -- so any effect hits both identically.
+Split, the background can melt while sprites stay legible, and an edge
+effect becomes possible at all: alpha on the sprite surface IS the sprite
+mask, so a rim glow follows the character's outline. HD replacement art
+follows the sprite layer, since substituted art replaces sprites.
+
+Handle `0` (the default) means "draw wherever the guest already was", so
+omitting both reproduces the old single-destination behaviour exactly.
+One-sided splits are legal: `spr_surface` alone diverts the sprites and
+leaves the background on the scene.
+
+Only NES and GB support it. MD, MSX and PCE consume the core's RESOLVED
+per-pixel planes -- priority, shadow and highlight are already applied
+per pixel -- so there is no separable sprite batch to redirect, and those
+profiles REFUSE the option (`nil` + reason in Lua, an exception in
+Python/JS/Ruby) instead of ignoring it. A silently-dropped layer request
+looks exactly like a working one until you notice both surfaces hold the
+same complete picture.
+
+Two things to know about surfaces when you use this:
+
+- **Surfaces share the 1920x1080 logical canvas.** Geometry is projected
+  against it regardless of the target's pixel size, so a smaller surface
+  shows the top-left corner of the layout rather than a scaled copy.
+  Make layer surfaces full logical size and position the game inside
+  them.
+- **A surface clears once per frame, on first target.** Re-entering one
+  within a frame accumulates, which is what lets the two layer brackets
+  of a single `draw` land on the same surface if you point both at it.
+  Call `ab.clear` yourself when you want a blank one.
 
 **The silent-fallback trap.** The profiles consume OPTIONAL per-line regions
 from the core (per-scanline register records, VRAM/palette write logs,

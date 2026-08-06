@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Layer split in the redraw profiles: `bg_surface` / `spr_surface`.**
+  `nes.draw` and `gb.draw` accept two optional surface handles and route
+  the background batch and the sprite batch (plus any HD replacement art,
+  which follows the sprites) to separate offscreen surfaces in ONE draw —
+  one frame read, one sprite evaluation. A bezel can then shade the world
+  and the actors differently: a melting background under sharp
+  hue-shifted sprites, a blurred playfield behind a crisp HUD, an edge
+  glow keyed to sprite coverage (alpha on the sprite surface IS the
+  sprite mask — an effect over the composited frame cannot know what an
+  edge is). Doing this from a script would mean two draws with layer
+  toggles, re-reading the frame and re-running sprite evaluation for one
+  machine state; doing it in the shared C core means all four languages
+  get identical pixels, because the bindings stay marshaling-only.
+  `ab_prof_layers_supported()` reports which profiles can honour it, and
+  the bindings REFUSE the option on those that cannot (MD/MSX/PCE consume
+  resolved per-pixel planes, so there is no separate sprite batch to
+  route) rather than silently drawing the whole picture into both
+  surfaces, which looks like it worked.
+
+### Fixed
+
+- **`surface_filter` ran before the draws it was meant to filter.** Draw
+  commands are queued and executed at frame end, but the filter ran its
+  GL immediately — so it filtered the previous frame's contents, or an
+  empty surface on frame 1. A bezel that drew a layer and then filtered
+  it saw no effect at all. The filter is now queued and runs in command
+  order. Compile errors are still reported synchronously as the return
+  value, so a bad shader fails loudly at the call.
+- **`surface_filter` into the same surface did nothing.** Filtering a
+  surface in place — the natural way to write "run my shader over this
+  layer" — bound the same texture as both sampler source and FBO
+  attachment, which GL leaves undefined; in practice the pass read
+  nothing and the surface kept its unfiltered contents. It now
+  ping-pongs through a cached scratch surface (one per size, no
+  per-frame allocation) and swaps, and the pass is orientation-neutral:
+  an identity shader no longer flips the picture.
+- **Targeting a surface cleared it every time.** A guest could not
+  re-enter a surface within a frame — the second `surface_target` wiped
+  what the first pass drew, so a layered redraw lost its background
+  entirely. Surfaces now clear ONCE per frame, on first target, and
+  re-entry accumulates like every other draw target. A guest that wants
+  a blank surface calls `ab.clear`, exactly as it would for the scene.
+- **A surface drawn with `draw_texture` came out upside down.** Surfaces
+  are FBO-backed (rows bottom-up) while uploaded textures are top-down;
+  the draw path did not distinguish them. It now inverts V for surface
+  handles, composed with any source sub-rect rather than fighting it.
+
 ## 0.7.0
 
 ### Added

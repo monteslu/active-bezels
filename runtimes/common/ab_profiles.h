@@ -33,9 +33,36 @@
 
 /* ------------------------------------------------------------- shared -- */
 
-/* One view shape covers nes/gb/md; msx and pce extend it below. */
+/* One view shape covers nes/gb/md; msx and pce extend it below.
+ *
+ * LAYER SPLIT (bg_surface / spr_surface). A redraw already emits the
+ * background and the sprites as separate batches; these route those
+ * batches to separate offscreen surfaces in ONE pass, so a bezel can shade
+ * the world and the actors differently -- a melting background under sharp
+ * hue-shifted sprites, HD art on its own layer, a blurred playfield behind
+ * a crisp HUD. A shader over the composited frame cannot do any of that:
+ * there, Mario and the bricks behind him are the same pixels.
+ *
+ * 0 (the default) means "draw to wherever the guest already pointed us",
+ * i.e. the existing single-destination behaviour, byte for byte.
+ *
+ * Why this lives here and not in the script: doing it from Lua means TWO
+ * draw calls with layer toggles, which re-reads the frame and re-runs
+ * sprite evaluation for what is one machine state. The core already has
+ * the frame decoded and the substitution decided, so routing the two
+ * batches it is about to emit anyway costs one host call per layer. It is
+ * also the only way all four languages get identical pixels: the split
+ * happens below the bindings, which stay marshaling-only.
+ *
+ * The surfaces are the CALLER's -- created, filtered, composited and
+ * destroyed by the guest. The core targets them and restores the previous
+ * target before returning, including on every error path: a profile that
+ * left the guest's draws pointed at an offscreen surface would silently
+ * blank the scene. */
 typedef struct {
   double x, y, scale;
+  int32_t bg_surface;    /* 0 = current target */
+  int32_t spr_surface;   /* 0 = current target */
 } ab_prof_view;
 
 /* Substitution management is identical across the five sprite profiles.
@@ -55,6 +82,16 @@ int  ab_prof_bound(ab_prof_id p);
 int  ab_prof_add_rule(ab_prof_id p, const ab_sub_rule *rule);  /* id or 0 */
 int  ab_prof_remove_rule(ab_prof_id p, int id);                /* 1 / 0 */
 void ab_prof_clear_rules(ab_prof_id p);
+
+/* Does this profile emit background and sprites as SEPARATE batches, i.e.
+ * can bg_surface/spr_surface actually route them apart? NES and GB can; MD
+ * cannot, because gpgx hands us resolved per-pixel planes with priority,
+ * shadow and highlight already applied, so there is no separable sprite
+ * batch to redirect. Bindings query this and REFUSE the option on profiles
+ * that would otherwise ignore it -- a silently-dropped layer request looks
+ * exactly like a working one until you notice both surfaces hold the same
+ * complete picture. */
+int  ab_prof_layers_supported(ab_prof_id p);
 
 /* ---------------------------------------------------------------- NES -- */
 

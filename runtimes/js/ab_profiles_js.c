@@ -214,14 +214,29 @@ static JSValue prof_clear(JSContext *ctx, const jsp_desc *d) {
   return JS_UNDEFINED;
 }
 
-static void read_view(JSContext *ctx, int argc, JSValueConst *argv,
-                      ab_prof_view *v, double def_scale) {
+/* Reads x/y/scale plus the optional layer-split surfaces. Returns 0 having
+ * THROWN when the caller asks for a split this profile cannot do, rather
+ * than quietly drawing the whole picture into both surfaces (which looks
+ * like it worked); callers return JS_EXCEPTION on 0. */
+static int read_view(JSContext *ctx, int argc, JSValueConst *argv,
+                     ab_prof_view *v, double def_scale, ab_prof_id prof) {
   v->x = 0; v->y = 0; v->scale = def_scale;
+  v->bg_surface = 0; v->spr_surface = 0;
   if (argc > 0) {
     v->x = jopt_num(ctx, argv[0], "x", 0);
     v->y = jopt_num(ctx, argv[0], "y", 0);
     v->scale = jopt_num(ctx, argv[0], "scale", def_scale);
+    v->bg_surface  = jopt_int(ctx, argv[0], "bg_surface", 0);
+    v->spr_surface = jopt_int(ctx, argv[0], "spr_surface", 0);
+    if ((v->bg_surface || v->spr_surface) &&
+        !ab_prof_layers_supported(prof)) {
+      JS_ThrowTypeError(ctx, "draw: bg_surface/spr_surface not supported on this profile "
+      "(its layers are resolved per pixel by the core, so there is "
+      "no separate sprite batch to route)");
+      return 0;
+    }
   }
+  return 1;
 }
 
 /* ---------------------------------------------------------------- NES -- */
@@ -246,7 +261,7 @@ PROF_FN(js_nes_draw) {
   PROF_UNUSED();
   ENSURE_BOUND(&JS_PROFS[AB_PROF_NES]);
   ab_prof_view v;
-  read_view(ctx, argc, argv, &v, 4.0);
+  if (!read_view(ctx, argc, argv, &v, 4.0, AB_PROF_NES)) return JS_EXCEPTION;
   ab_prof_nes_result r;
   const char *err = NULL;
   if (!ab_prof_nes_draw(&v, &r, &err)) return JS_NULL;
@@ -286,7 +301,7 @@ PROF_FN(js_gb_draw) {
   PROF_UNUSED();
   ENSURE_BOUND(&JS_PROFS[AB_PROF_GB]);
   ab_prof_view v;
-  read_view(ctx, argc, argv, &v, 7.0);
+  if (!read_view(ctx, argc, argv, &v, 7.0, AB_PROF_GB)) return JS_EXCEPTION;
   ab_prof_gb_result r;
   const char *err = NULL;
   if (!ab_prof_gb_draw(&v, &r, &err)) return JS_NULL;
@@ -326,7 +341,7 @@ PROF_FN(js_md_draw) {
   PROF_UNUSED();
   ENSURE_BOUND(&JS_PROFS[AB_PROF_MD]);
   ab_prof_view v;
-  read_view(ctx, argc, argv, &v, 4.0);
+  if (!read_view(ctx, argc, argv, &v, 4.0, AB_PROF_MD)) return JS_EXCEPTION;
   ab_prof_md_result r;
   const char *err = NULL;
   if (!ab_prof_md_draw(&v, &r, &err)) return JS_NULL;
@@ -389,7 +404,7 @@ PROF_FN(js_msx_draw) {
   PROF_UNUSED();
   ENSURE_BOUND(&JS_PROFS[AB_PROF_MSX]);
   ab_prof_msx_view v;
-  read_view(ctx, argc, argv, &v.v, 3.0);
+  if (!read_view(ctx, argc, argv, &v.v, 3.0, AB_PROF_MSX)) return JS_EXCEPTION;
   v.fit_width = argc > 0 ? jopt_bool(ctx, argv[0], "fit_width", 0) : 0;
   ab_prof_msx_result r;
   const char *err = NULL;

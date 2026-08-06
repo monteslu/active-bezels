@@ -480,27 +480,107 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     return handle;
   }
 
+  /* A spare surface for in-place filtering, one per (width, height). Cached
+   * because an in-place filter happens every frame per layer; allocating a
+   * 1440x1080 target 120 times a second is not a thing to do. */
+  _filterScratch(width, height) {
+    this._scratchSurfaces ??= new Map();
+    const key = `${width}x${height}`;
+    const existing = this._scratchSurfaces.get(key);
+    if (existing && this.surfaces.has(existing)) return existing;
+    const handle = this.surfaceCreate(width, height);
+    if (!handle) return 0;
+    this._scratchSurfaces.set(key, handle);
+    return handle;
+  }
+
+  /* Exchange the backing texture (and FBO) of two surfaces, so a filter that
+   * rendered into `b` becomes the visible contents of `a`. Both handles stay
+   * valid and keep their sizes; only what they point at is swapped. */
+  _swapSurfaceTextures(a, b) {
+    const sa = this.surfaces.get(a), sb = this.surfaces.get(b);
+    if (!sa || !sb) return;
+    const t = sa.texture, f = sa.fbo;
+    sa.texture = sb.texture; sa.fbo = sb.fbo;
+    sb.texture = t;          sb.fbo = f;
+    this.gpuTextures.set(a, sa.texture);
+    this.gpuTextures.set(b, sb.texture);
+  }
+
   /* Run `shaderSource` over `source` and write the result into `destination`.
    * Both are surface or texture handles; source may be GAME_TEXTURE (-1).
    * Shaders are compiled once and cached, since a bezel calls this every
    * frame with the same source. */
+  /*
+   * Queue a filter so it runs IN COMMAND ORDER.
+   *
+   * Drawing is deferred: every draw call appends to this.commands and the GL
+   * work happens later, when the frame is executed. A filter that ran its GL
+   * immediately would therefore run BEFORE the draws that fill its source --
+   * it would filter last frame's contents, or on frame 1 an empty surface,
+   * and a bezel that draws a layer and then filters it would see no effect at
+   * all. Queueing puts the filter after the draws the guest issued before it,
+   * which is what the guest wrote and what the CPU path's ordering implies.
+   */
   surfaceFilter(source, destination, shaderSource, gamePixels, gameWidth, gameHeight) {
     if (!this.gpuReady) return 0;
-    const target = this.surfaces.get(destination);
-    if (!target) return 0;
-    gl.makeCurrent?.();
+    if (!this.surfaces.get(destination)) return 0;
+    /* Compile eagerly: a bad shader must report failure to the guest NOW,
+     * as the return value, rather than silently doing nothing at execute
+     * time. _surfaceFilterNow reuses the cached program. */
+    if (!this._filterProgram(shaderSource)) return 0;
+    this._push({
+      kind: 'surface-filter', source, destination, shaderSource,
+      gamePixels, gameWidth, gameHeight,
+    });
+    return 1;
+  }
 
+  /* Look up (and cache) a filter program. Returns null on compile failure,
+   * remembering it so a broken shader is not recompiled every frame. */
+  _filterProgram(shaderSource) {
     let entry = this.filterPrograms.get(shaderSource);
     if (entry === undefined) {
       try {
         entry = { program: program(shaderSource) };
       } catch (err) {
-        entry = null;                  /* remember the failure; do not retry */
+        entry = null;
         process.env.RETROEMU_DEBUG && console.error(`[active-bezel] surface filter: ${err.message}`);
         this.effectError = String(err.message || err);
       }
       this.filterPrograms.set(shaderSource, entry);
     }
+    return entry;
+  }
+
+  _surfaceFilterNow(source, destination, shaderSource, gamePixels, gameWidth, gameHeight,
+                    inPlace = false) {
+    if (!this.gpuReady) return 0;
+    const target = this.surfaces.get(destination);
+    if (!target) return 0;
+    gl.makeCurrent?.();
+
+    /* IN-PLACE filter (source === destination) is the natural way to write
+     * this from a guest -- "run my shader over this surface" -- and it is
+     * exactly what a layered bezel does per layer per frame. Done naively it
+     * samples the same texture that is attached to the bound FBO, which GL
+     * leaves undefined: in practice the pass reads nothing and the surface
+     * keeps its unfiltered contents, so the effect silently does nothing.
+     *
+     * Render into a scratch surface of the same size and swap the two
+     * textures. The guest's handle keeps addressing the filtered result, and
+     * the scratch becomes the new spare -- no per-frame allocation. */
+    if (source === destination) {
+      const scratch = this._filterScratch(target.width, target.height);
+      if (!scratch) return 0;
+      const ok = this._surfaceFilterNow(source, scratch, shaderSource,
+        gamePixels, gameWidth, gameHeight, true);
+      if (!ok) return 0;
+      this._swapSurfaceTextures(destination, scratch);
+      return 1;
+    }
+
+    const entry = this._filterProgram(shaderSource);
     if (!entry) return 0;
 
     let sourceTexture;
@@ -529,16 +609,30 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     gl.glUseProgram(entry.program);
     gl.glActiveTexture(C.TEXTURE0);
     gl.glBindTexture(C.TEXTURE_2D, sourceTexture);
-    /* Flip V.
+    /* Flip V -- but only when the SOURCE and the DESTINATION disagree about
+     * row order.
      *
-     * A surface is rendered into an FBO, whose rows run bottom-up, but every
-     * consumer -- draw_texture, mesh, quad -- samples top-down like an
-     * uploaded image. Without this the filtered picture comes back upside
-     * down AND mirrored, which is exactly what the tube showed the first
-     * time. Same class of bug as the scene effect pass; fixed the same way,
-     * at the one place that knows the target is an FBO. */
+     * The destination is always an FBO (bottom-up). An uploaded source (the
+     * game texture, an image) is top-down, so it needs the flip: without it
+     * the filtered picture comes back upside down AND mirrored, which is
+     * what the tube showed the first time.
+     *
+     * A SURFACE source is itself FBO-backed, so it already matches the
+     * destination and flipping would invert it. That case is real: filtering
+     * one layer surface into another is how a bezel shades its layers. */
+    const sourceIsSurface = source !== -1 && this.surfaces.has(source);
+    /* One exception to "matching row order needs no flip": the IN-PLACE
+     * ping-pong below renders surface -> scratch and then SWAPS the two
+     * textures. The swap does not re-orient anything, so a straight copy
+     * would leave the result inverted relative to where it started (an
+     * IDENTITY filter visibly flipped the picture -- that is how this was
+     * found). Flipping this one pass cancels it, so filtering in place is
+     * orientation-neutral, which is the only sane contract: running a
+     * no-op shader over a surface must not move its pixels. */
+    const v = (sourceIsSurface && !inPlace) ? { u0: 0, v0: 0, u1: 1, v1: 1 }
+                                            : { u0: 0, v0: 1, u1: 1, v1: 0 };
     this._geometry(entry.program,
-      quad(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, { u0: 0, v0: 1, u1: 1, v1: 0 }));
+      quad(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, v));
     const u = (name) => gl.glGetUniformLocation(entry.program, name);
     gl.glUniform1i(u('u_texture'), 0);
     gl.glUniform2f(u('u_resolution'), target.width, target.height);
@@ -1005,6 +1099,11 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
      * Linear sampling is already center-based on the CPU, so no shift. */
     let uv = sourceUv(command, sourceWidth, sourceHeight)
       ?? { u0: 0, v0: 0, u1: 1, v1: 1 };
+    /* An FBO-backed source (a surface) stores rows bottom-up. Swapping v0/v1
+     * AFTER the sub-rect is resolved means a source rect keeps meaning the
+     * same region of the picture; flipping the rect's coordinates instead
+     * would move which part of the surface is drawn. */
+    if (command.flipV) uv = { ...uv, v0: uv.v1, v1: uv.v0 };
     if (!command.sampling) {
       const sx = this.outputWidth / LOGICAL_WIDTH;
       const sy = this.outputHeight / LOGICAL_HEIGHT;
@@ -1074,6 +1173,10 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     gl.glEnable(C.BLEND);
     gl.glBlendFunc(C.SRC_ALPHA, C.ONE_MINUS_SRC_ALPHA);
     let clip = null;
+    /* Which surfaces have been cleared this frame -- see the surface-target
+     * handler. Per FRAME, not per target, so re-entering a surface within one
+     * frame accumulates instead of wiping. */
+    this._clearedSurfaces = new Set();
     /* Drawing into a surface swaps the render target mid-stream; the stack
      * lets a bezel nest them (compose into A, then use A while filling B). */
     const targetStack = [];
@@ -1093,13 +1196,36 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
         if (target) {
           targetStack.push(target);
           bindTarget();
-          gl.glClearColor(0, 0, 0, 0);
-          gl.glClear(C.COLOR_BUFFER_BIT);
+          /* Clear ONCE per surface per frame, on first target. Targeting is
+           * not the same act as clearing, and a guest may legitimately
+           * re-enter a surface within one frame -- a layered redraw brackets
+           * each layer separately, so the second bracket used to WIPE what
+           * the first one drew (the background vanished and only the sprite
+           * layer survived). Re-entry now accumulates, which is what every
+           * other draw target does; a guest that wants a blank surface calls
+           * ab.clear, exactly as it would for the scene. */
+          if (!this._clearedSurfaces.has(command.handle)) {
+            this._clearedSurfaces.add(command.handle);
+            gl.glClearColor(0, 0, 0, 0);
+            gl.glClear(C.COLOR_BUFFER_BIT);
+          }
         }
         continue;
       } else if (command.kind === 'surface-end') {
         targetStack.pop();
         bindTarget();
+        continue;
+      } else if (command.kind === 'surface-filter') {
+        /* Runs here, in command order, so it sees the draws the guest issued
+         * before it. Restore whatever target was bound: the filter binds its
+         * own destination FBO, and leaving it bound would send the following
+         * draws into it. */
+        this._surfaceFilterNow(command.source, command.destination,
+          command.shaderSource, command.gamePixels,
+          command.gameWidth, command.gameHeight);
+        bindTarget();
+        gl.glEnable(C.BLEND);
+        gl.glBlendFunc(C.SRC_ALPHA, C.ONE_MINUS_SRC_ALPHA);
         continue;
       }
       if (command.kind === 'scissor') {
@@ -1160,7 +1286,17 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       } else if (command.kind === 'texture') {
         const texture = this.textures.get(command.handle);
         const id = this.gpuTextures.get(command.handle);
-        if (texture && id) this._drawTexture(id, null, texture.width, texture.height, command);
+        /* A SURFACE was rendered into an FBO, so its rows run bottom-up,
+         * while an uploaded texture is stored top-down. Drawing one without
+         * inverting V shows the surface upside down -- same class of bug the
+         * scene-effect and surface-filter passes each already correct at the
+         * one place that knows the source is an FBO. This is that place for
+         * draw_texture: `flipV` reaches sourceUv() so it composes with a
+         * source sub-rect rather than fighting it. */
+        if (texture && id) {
+          this._drawTexture(id, null, texture.width, texture.height,
+            this.surfaces.has(command.handle) ? { ...command, flipV: true } : command);
+        }
       }
     }
     if (clip) gl.glDisable(C.SCISSOR_TEST);

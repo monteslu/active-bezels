@@ -43,6 +43,28 @@ static int32_t region_any(const char *a, const char *b, const char *c) {
   return r;
 }
 
+/* --- layer routing -------------------------------------------------------
+ *
+ * A redraw emits its layers as separate batches; ab_prof_view's bg_surface
+ * and spr_surface route them to separate offscreen surfaces so a bezel can
+ * shade each differently (see the header for why this is not a script-side
+ * concern). Handle 0 means "leave the target alone", which is the default
+ * and reproduces the old single-destination behaviour exactly.
+ *
+ * layer_end() must run on EVERY path out of a draw, including the error
+ * ones: leaving the guest's subsequent draws pointed at an offscreen
+ * surface blanks the visible scene, and the guest has no way to tell that
+ * happened. */
+static int layer_begin(int32_t surface) {
+  if (!surface) return 0;
+  ab_surface_target(surface);
+  return 1;
+}
+
+static void layer_end(int active) {
+  if (active) ab_surface_end();
+}
+
 /* Substitution bookkeeping, identical across the five sprite profiles:
  * a kit registry plus the replacement art table parallel to rule ids. */
 typedef struct {
@@ -83,6 +105,13 @@ int ab_prof_remove_rule(ab_prof_id p, int id) {
     }
   }
   return removed;
+}
+
+int ab_prof_layers_supported(ab_prof_id p) {
+  /* See the header. NES and GB emit background and sprites as separate
+   * batches; MD/MSX/PCE resolve their layers per pixel before we ever see
+   * them, so there is nothing to route apart. */
+  return p == AB_PROF_NES || p == AB_PROF_GB;
 }
 
 void ab_prof_clear_rules(ab_prof_id p) {
@@ -198,19 +227,25 @@ int ab_prof_nes_draw(const ab_prof_view *v, ab_prof_nes_result *r,
                                  G_nes.suppress, &rule, &bounds);
   }
 
-  /* Background, then sprites. Each layer is ONE mesh command. */
+  /* Background, then sprites. Each layer is ONE mesh command, optionally
+   * routed to its own surface (v->bg_surface / v->spr_surface). */
+  int layer = layer_begin(v->bg_surface);
   ab_batch_reset(G_nes.batch);
   const int bg_quads = ab_nes_emit_background(G_nes.batch, &G_nes.frame,
                                               &view, frame_mask);
   ab_batch_flush(G_nes.batch, 0);
+  layer_end(layer);
 
+  layer = layer_begin(v->spr_surface);
   ab_batch_reset(G_nes.batch);
   const int spr_quads = ab_nes_emit_sprites(G_nes.batch, &G_nes.frame, &view,
                                             frame_mask,
                                             marked ? G_nes.suppress : NULL);
   ab_batch_flush(G_nes.batch, 0);
 
-  /* Replacement art, anchored to the live metasprite bounds. */
+  /* Replacement art, anchored to the live metasprite bounds. This is still
+   * inside the SPRITE layer: substituted art replaces sprites, so it must
+   * land wherever the sprites went or it would be shaded as background. */
   int hd_drawn = 0;
   if (marked && rule && bounds.x1 > bounds.x0) {
     int32_t tex; int tw, th;
@@ -232,6 +267,7 @@ int ab_prof_nes_draw(const ab_prof_view *v, ab_prof_nes_result *r,
       hd_drawn = 1;
     }
   }
+  layer_end(layer);
 
   r->bg_quads = bg_quads;
   r->spr_quads = spr_quads;
@@ -341,17 +377,22 @@ int ab_prof_gb_draw(const ab_prof_view *v, ab_prof_gb_result *r,
                                 G_gb.suppress, &rule, &bounds);
   }
 
-  /* Background, then sprites. Each layer is ONE mesh command. */
+  /* Background, then sprites. Each layer is ONE mesh command, optionally
+   * routed to its own surface (v->bg_surface / v->spr_surface). */
+  int layer = layer_begin(v->bg_surface);
   ab_batch_reset(G_gb.batch);
   const int bg_quads = ab_gb_emit_background(G_gb.batch, &G_gb.frame, &view);
   ab_batch_flush(G_gb.batch, 0);
+  layer_end(layer);
 
+  layer = layer_begin(v->spr_surface);
   ab_batch_reset(G_gb.batch);
   const int spr_quads = ab_gb_emit_sprites(G_gb.batch, &G_gb.frame, &view,
                                            marked ? G_gb.suppress : NULL);
   ab_batch_flush(G_gb.batch, 0);
 
-  /* Replacement art, anchored to the live metasprite bounds. */
+  /* Replacement art, anchored to the live metasprite bounds. Still inside
+   * the SPRITE layer: substituted art replaces sprites. */
   int hd_drawn = 0;
   if (marked && rule && bounds.x1 > bounds.x0) {
     int32_t tex; int tw, th;
@@ -374,6 +415,7 @@ int ab_prof_gb_draw(const ab_prof_view *v, ab_prof_gb_result *r,
       hd_drawn = 1;
     }
   }
+  layer_end(layer);
 
   r->bg_quads = bg_quads;
   r->spr_quads = spr_quads;
@@ -482,6 +524,15 @@ int ab_prof_md_draw(const ab_prof_view *v, ab_prof_md_result *r,
                                 G_md.suppress, &rule, &bounds);
   }
 
+  /* NO layer split here, deliberately. Unlike NES/GB -- which emit a
+   * background batch and a sprite batch this code could route apart -- the
+   * MD path consumes gpgx's RESOLVED per-pixel planes: priority, shadow and
+   * highlight are already applied per pixel, so "the sprite layer" is not a
+   * separable batch to redirect. Honouring bg_surface here would have to
+   * re-render from scratch and would still not reproduce the core's
+   * per-pixel priority resolution. ab_prof_md_layers_supported() reports
+   * this so a binding can refuse the option loudly instead of ignoring it. */
+  int layer = layer_begin(v->bg_surface ? v->bg_surface : v->spr_surface);
   ab_batch_reset(G_md.batch);
   const int quads = ab_md_emit(G_md.batch, &G_md.frame, &view,
                                marked ? G_md.suppress : NULL);
@@ -506,6 +557,7 @@ int ab_prof_md_draw(const ab_prof_view *v, ab_prof_md_result *r,
       hd_drawn = 1;
     }
   }
+  layer_end(layer);
 
   r->quads = quads;
   r->hd_drawn = hd_drawn;
@@ -886,6 +938,11 @@ int ab_prof_pce_bind(const char **err) {
 
 void ab_prof_pce_view_init(ab_prof_pce_view *v) {
   v->v.x = 0; v->v.y = 0; v->v.scale = 4.0;
+  /* PCE resolves its layers per pixel like MD, so it has no separable
+   * sprite batch to route; ab_prof_layers_supported() says so and the
+   * bindings refuse the option. Zero them anyway -- an uninitialised
+   * handle here would target a random surface. */
+  v->v.bg_surface = 0; v->v.spr_surface = 0;
   v->height = 224;
   v->force_bg = -1;
   v->force_sprites = -1;

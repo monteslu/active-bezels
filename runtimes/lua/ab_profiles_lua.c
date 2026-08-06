@@ -65,13 +65,30 @@ static int field_tri(lua_State *S, int idx, const char *field) {
   return v;
 }
 
-static void read_view(lua_State *S, ab_prof_view *v, double def_scale) {
+/* Reads x/y/scale plus the optional layer-split surfaces. Returns 0 and
+ * leaves *err set when the caller asked for a split this profile cannot do;
+ * the draw shim then fails loudly rather than quietly drawing the whole
+ * picture into both surfaces (which looks like it worked). */
+static int read_view(lua_State *S, ab_prof_view *v, double def_scale,
+                     ab_prof_id prof, const char **err) {
   v->x = 0; v->y = 0; v->scale = def_scale;
+  v->bg_surface = 0; v->spr_surface = 0;
+  *err = NULL;
   if (lua_istable(S, 1)) {
     field_num(S, 1, "x", &v->x);
     field_num(S, 1, "y", &v->y);
     field_num(S, 1, "scale", &v->scale);
+    v->bg_surface  = field_int(S, 1, "bg_surface", 0);
+    v->spr_surface = field_int(S, 1, "spr_surface", 0);
+    if ((v->bg_surface || v->spr_surface) &&
+        !ab_prof_layers_supported(prof)) {
+      *err = "draw: bg_surface/spr_surface not supported on this profile "
+             "(its layers are resolved per pixel by the core, so there is "
+             "no separate sprite batch to route)";
+      return 0;
+    }
   }
+  return 1;
 }
 
 static int push_nil_msg(lua_State *S, const char *msg) {
@@ -206,9 +223,9 @@ static int l_nes_clear_replacements(lua_State *S) {
 static int l_nes_draw(lua_State *S) {
   ensure_bound(S, &PROFS[AB_PROF_NES]);
   ab_prof_view v;
-  read_view(S, &v, 4.0);
-  ab_prof_nes_result r;
   const char *err = NULL;
+  if (!read_view(S, &v, 4.0, AB_PROF_NES, &err)) return push_nil_msg(S, err);
+  ab_prof_nes_result r;
   if (!ab_prof_nes_draw(&v, &r, &err)) return push_nil_msg(S, err);
   lua_createtable(S, 0, 4);
   lua_pushinteger(S, r.bg_quads);         lua_setfield(S, -2, "bg_quads");
@@ -258,9 +275,9 @@ static int l_gb_clear_replacements(lua_State *S) {
 static int l_gb_draw(lua_State *S) {
   ensure_bound(S, &PROFS[AB_PROF_GB]);
   ab_prof_view v;
-  read_view(S, &v, 7.0);
-  ab_prof_gb_result r;
   const char *err = NULL;
+  if (!read_view(S, &v, 7.0, AB_PROF_GB, &err)) return push_nil_msg(S, err);
+  ab_prof_gb_result r;
   if (!ab_prof_gb_draw(&v, &r, &err)) return push_nil_msg(S, err);
   lua_createtable(S, 0, 4);
   lua_pushinteger(S, r.bg_quads);         lua_setfield(S, -2, "bg_quads");
@@ -308,9 +325,9 @@ static int l_md_clear_replacements(lua_State *S) {
 static int l_md_draw(lua_State *S) {
   ensure_bound(S, &PROFS[AB_PROF_MD]);
   ab_prof_view v;
-  read_view(S, &v, 4.0);
-  ab_prof_md_result r;
   const char *err = NULL;
+  if (!read_view(S, &v, 4.0, AB_PROF_MD, &err)) return push_nil_msg(S, err);
+  ab_prof_md_result r;
   if (!ab_prof_md_draw(&v, &r, &err)) return push_nil_msg(S, err);
   lua_createtable(S, 0, 3);
   lua_pushinteger(S, r.quads);            lua_setfield(S, -2, "quads");
@@ -379,7 +396,8 @@ static int l_msx_mode(lua_State *S) {
 static int l_msx_draw(lua_State *S) {
   ensure_bound(S, &PROFS[AB_PROF_MSX]);
   ab_prof_msx_view v;
-  read_view(S, &v.v, 3.0);
+  const char *verr = NULL;
+  if (!read_view(S, &v.v, 3.0, AB_PROF_MSX, &verr)) return push_nil_msg(S, verr);
   v.fit_width = 0;
   if (lua_istable(S, 1)) {
     lua_getfield(S, 1, "fit_width");
