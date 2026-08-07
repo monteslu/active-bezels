@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Each GpuCompositor owns its own GL context.** native-gles is
+  multi-context now; the compositor captures the handle `createContext`
+  returns and binds every makeCurrent/swap/setSwapInterval/destroy to it.
+  The old process-global context meant every consumer in the server (each
+  session's compositor, each wasmcart cart) silently shared one context —
+  harmless while everything rendered offscreen and read back CPU pixels,
+  but the moment GL-direct present bound that shared context to a window,
+  every other consumer's rendering presented into that window. Requires
+  native-gles >= 0.6.0.
+- **`migrateToWindow` attaches instead of rebuilding.** The window surface
+  binds to the LIVE context (`attachWindow`), so every texture, FBO,
+  surface and compiled program survives untouched and the rebuild path —
+  the source of the "works headless, dies in the window" bug class — is
+  bypassed entirely. The destroy/recreate dance remains only as a fallback
+  for configs without a window bit, and fails non-destructively.
+- **Window presents block on vsync.** The GPU blit+swap costs ~0.2ms, and
+  unsynced timer-paced swaps land at random phases of the refresh — frames
+  shown twice or skipped, microstutter at a nominally perfect frame rate.
+  (Interval 0 was only ever right for the software present, whose 13.6ms
+  blit had no room to also block.) On macOS this rides native-gles' Metal
+  backend; the CGL backend it replaced ignored swap intervals entirely.
+
 ## 0.8.0
 
 ### Added
