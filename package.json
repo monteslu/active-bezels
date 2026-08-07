@@ -70,7 +70,7 @@
     "wasmcart": "^0.16.0"
   },
   "devDependencies": {
-    "native-gles": "^0.5.0"
+    "native-gles": "^0.6.0"
   },
   "peerDependenciesMeta": {
     "native-gles": {
@@ -78,6 +78,6 @@
     }
   },
   "peerDependencies": {
-    "native-gles": "^0.5.0"
+    "native-gles": "^0.6.0"
   }
 }
