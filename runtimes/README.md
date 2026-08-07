@@ -6,10 +6,10 @@ needs **no toolchain**: copy the wasm and a script, edit, reload.
 
 | Directory | Language | Size | Script | API entry |
 |---|---|---|---|---|
-| [`lua/`](lua/) | Lua 5.4.7 | 397 KB | `main.lua` | global `ab` table |
-| [`python/`](python/) | MicroPython 1.24.1 | 287 KB | `main.py` | global `ab` module |
-| [`js/`](js/) | QuickJS 0.15.1 | 579 KB | `main.js` | global `ab` object |
-| [`ruby/`](ruby/) | mruby 3.4.0 | 620 KB | `main.rb` | `AB` module |
+| [`lua/`](lua/) | Lua 5.4.7 | 418 KB | `main.lua` | global `ab` table |
+| [`python/`](python/) | MicroPython 1.24.1 | 306 KB | `main.py` | global `ab` module |
+| [`js/`](js/) | QuickJS 0.15.1 | 598 KB | `main.js` | global `ab` object |
+| [`ruby/`](ruby/) | mruby 3.4.0 | 640 KB | `main.rb` | `AB` module |
 
 All four expose the **same 65 functions**, with the same names and semantics.
 A bezel ports between languages by changing syntax, not capability — including
@@ -64,6 +64,23 @@ not mean reimplementing images or fonts.
   `ActiveBezelRuntime.reloadAssets()`, which re-opens the package from disk
   first — firing the event alone would have the guest re-read bytes the package
   had already cached.
+
+
+## Failure is a reported state, not a silent one
+
+Every runtime catches a script error the same way and reports it through the
+same three channels: an on-screen panel in an embedded TrueType face, an
+`AB-ERROR:` line on stderr that needs no debug flag, and the `ab_last_error`
+export that hosts read as `status().scriptError`.
+
+The export is the load-bearing one. A script error is caught by the
+interpreter, so the host's tick returns *normally* -- a host-side `error`
+field stays null and automated checks pass while the screen shows a stack
+trace. Anything deciding "is this bezel healthy?" must read `scriptError`.
+
+The panel is drawn in C, from a font compiled into the runtime, for the same
+reason: by the time it renders, the script is dead and the package may be
+unreadable, so neither can be depended on.
 
 ## Why these four
 

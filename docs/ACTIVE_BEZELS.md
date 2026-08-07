@@ -546,10 +546,10 @@ host ABI to it:
 
 | Runtime | Language | Size | Script | Entry point | Docs |
 |---|---|---|---|---|---|
-| `runtimes/lua/` | Lua 5.4.7 | 337 KB | `main.lua` | global `ab` table | [Lua bezels](../runtimes/lua/README.md) |
-| `runtimes/python/` | MicroPython 1.24.1 | 237 KB | `main.py` | global `ab` module | [Python bezels](../runtimes/python/README.md) |
-| `runtimes/js/` | QuickJS 0.15.1 | 532 KB | `main.js` | global `ab` object | [JavaScript bezels](../runtimes/js/README.md) |
-| `runtimes/ruby/` | mruby 3.4.0 | 574 KB | `main.rb` | `AB` module | [Ruby bezels](../runtimes/ruby/README.md) |
+| `runtimes/lua/` | Lua 5.4.7 | 418 KB | `main.lua` | global `ab` table | [Lua bezels](../runtimes/lua/README.md) |
+| `runtimes/python/` | MicroPython 1.24.1 | 306 KB | `main.py` | global `ab` module | [Python bezels](../runtimes/python/README.md) |
+| `runtimes/js/` | QuickJS 0.15.1 | 598 KB | `main.js` | global `ab` object | [JavaScript bezels](../runtimes/js/README.md) |
+| `runtimes/ruby/` | mruby 3.4.0 | 640 KB | `main.rb` | `AB` module | [Ruby bezels](../runtimes/ruby/README.md) |
 
 All four expose the same 65 functions with the same names and semantics; each
 README above lists them by area and covers only where that language differs.
@@ -606,6 +606,8 @@ scale, rotate`
 draw_texture_rect, image, image_data`
 **Text** `font, draw_text, measure, font_metrics`
 **Effects** `effect_set, effect_clear`
+**Layers** (redraw profiles) `hide_cell, hide_sprite, isolate_sprite`, plus
+`bg_surface` / `solid_surface` / `spr_surface` on `draw`
 **The machine** `region, region_find_id, region_size, region_flags,
 region_offset, region_generation, region_count, read_u8, write_u8, read,
 read_u16, read_u24, read_u32, game_width, game_height, game_pixel`
