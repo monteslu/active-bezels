@@ -17,7 +17,22 @@ command -v "$EMAR" >/dev/null || EMAR="$HOME/code/mine/emsdk/upstream/emscripten
 if [ ! -f vendor/liblua54.a ]; then
   mkdir -p vendor
   if [ ! -d vendor/lua ]; then
-    curl -sL "https://www.lua.org/ftp/lua-${LUA_VERSION}.tar.gz" -o vendor/lua.tar.gz
+    # lua.org first, MacPorts distfiles as fallback — lua.org goes dark often
+    # enough to have killed CI rebuilds (curl exit 28). Both sources must
+    # match the pinned checksum: a mirror is trusted by hash, not by name.
+    LUA_SHA256=9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30
+    fetched=""
+    for url in \
+      "https://www.lua.org/ftp/lua-${LUA_VERSION}.tar.gz" \
+      "https://distfiles.macports.org/lua/lua-${LUA_VERSION}.tar.gz"; do
+      if curl -sL --retry 3 --connect-timeout 15 "$url" -o vendor/lua.tar.gz; then
+        got=$(shasum -a 256 vendor/lua.tar.gz 2>/dev/null | cut -d' ' -f1 \
+              || sha256sum vendor/lua.tar.gz | cut -d' ' -f1)
+        if [ "$got" = "$LUA_SHA256" ]; then fetched="$url"; break; fi
+        echo "checksum mismatch from $url (got $got)" >&2
+      fi
+    done
+    [ -n "$fetched" ] || { echo "could not fetch lua-${LUA_VERSION}.tar.gz from any source" >&2; exit 1; }
     tar xzf vendor/lua.tar.gz -C vendor
     mv "vendor/lua-${LUA_VERSION}" vendor/lua
     rm vendor/lua.tar.gz
