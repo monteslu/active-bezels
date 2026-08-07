@@ -633,28 +633,30 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     gl.glUseProgram(entry.program);
     gl.glActiveTexture(C.TEXTURE0);
     gl.glBindTexture(C.TEXTURE_2D, sourceTexture);
-    /* Flip V -- but only when the SOURCE and the DESTINATION disagree about
-     * row order.
+    /* Flip V -- for SURFACE sources, never for uploaded ones.
      *
-     * The destination is always an FBO (bottom-up). An uploaded source (the
-     * game texture, an image) is top-down, so it needs the flip: without it
-     * the filtered picture comes back upside down AND mirrored, which is
-     * what the tube showed the first time.
+     * The pipeline's vertex shader negates y, so a quad vertex at logical
+     * y=0 (the top) renders to FBO row H-1. Every surface therefore stores
+     * its logical top at the HIGHEST row. The UV at that same vertex is v0,
+     * so "copy preserving orientation" means: v0 must sample the source's
+     * logical top.
      *
-     * A SURFACE source is itself FBO-backed, so it already matches the
-     * destination and flipping would invert it. That case is real: filtering
-     * one layer surface into another is how a bezel shades its layers. */
+     *   uploaded source (game texture, image): logical top is texel v=0
+     *     (memory row 0) -> v0=0, NO flip.
+     *   surface source: logical top is texel v=1 (FBO row H-1) -> v0=1,
+     *     FLIP.
+     *
+     * The first version had this exactly backwards for both cases -- the
+     * two inversions cancelled for surface->surface (so layer shading
+     * looked right) while GAME_TEXTURE->surface came out upside down once
+     * draw_texture's own surface flip was applied on top. The in-place
+     * "exception" that flipped after the ping-pong swap was this same rule
+     * arrived at by symptom: with the base rule stated correctly, in-place
+     * needs nothing special -- an identity filter keeps every pixel where
+     * it was, swapped storage or not. */
     const sourceIsSurface = source !== -1 && this.surfaces.has(source);
-    /* One exception to "matching row order needs no flip": the IN-PLACE
-     * ping-pong below renders surface -> scratch and then SWAPS the two
-     * textures. The swap does not re-orient anything, so a straight copy
-     * would leave the result inverted relative to where it started (an
-     * IDENTITY filter visibly flipped the picture -- that is how this was
-     * found). Flipping this one pass cancels it, so filtering in place is
-     * orientation-neutral, which is the only sane contract: running a
-     * no-op shader over a surface must not move its pixels. */
-    const v = (sourceIsSurface && !inPlace) ? { u0: 0, v0: 0, u1: 1, v1: 1 }
-                                            : { u0: 0, v0: 1, u1: 1, v1: 0 };
+    const v = sourceIsSurface ? { u0: 0, v0: 1, u1: 1, v1: 0 }
+                              : { u0: 0, v0: 0, u1: 1, v1: 1 };
     this._geometry(entry.program,
       quad(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, v));
     const u = (name) => gl.glGetUniformLocation(entry.program, name);
