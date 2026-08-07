@@ -6,7 +6,11 @@
 # mruby_wasm_config.rb so upstream stays pristine on disk.
 set -euo pipefail
 cd "$(dirname "$0")"
-MRUBY_TAG=3.4.0
+MRUBY_TAG=3.4.0  # human label; the PIN is the commit below
+# refs/tags/3.4.0 (lightweight tag) — pinned by SHA for the same reason as
+# the python and js runtimes: a tag can be moved, a commit cannot, and git
+# verifies fetched content against the hash.
+MRUBY_COMMIT=a309524d0bc90eef077a24634db2495a6f68e318
 EMSDK_BIN="$HOME/code/mine/emsdk/upstream/emscripten"
 EMCC="${EMCC:-emcc}"
 command -v "$EMCC" >/dev/null || EMCC="$EMSDK_BIN/emcc"
@@ -16,8 +20,12 @@ command -v "$EMAR" >/dev/null || EMAR="$EMSDK_BIN/emar"
 MRUBY_LIB=vendor/mruby/build/emscripten/lib/libmruby.a
 if [ ! -f "$MRUBY_LIB" ]; then
   mkdir -p vendor
-  [ -d vendor/mruby ] || git clone --depth 1 --branch "$MRUBY_TAG" \
-    https://github.com/mruby/mruby.git vendor/mruby
+  if [ ! -d vendor/mruby ]; then
+    git init -q vendor/mruby
+    git -C vendor/mruby remote add origin https://github.com/mruby/mruby.git
+    git -C vendor/mruby fetch -q --depth 1 origin "$MRUBY_COMMIT"
+    git -C vendor/mruby checkout -q FETCH_HEAD
+  fi
   # mruby's rake shells out to plain `emcc`/`emar`, so the emsdk directory has
   # to be on PATH for the cross-build even when this script was given absolute
   # tool paths.

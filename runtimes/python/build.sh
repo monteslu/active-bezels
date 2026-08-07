@@ -7,14 +7,21 @@
 # exactly the shape a bezel needs: no filesystem, no syscalls, no WASI.
 set -euo pipefail
 cd "$(dirname "$0")"
-MPY_VERSION=v1.24.1
+MPY_VERSION=v1.24.1  # human label; the PIN is the commit below
+# tags/v1.24.1^{} — a tag is a movable ref, a commit SHA is content-addressed:
+# git verifies everything it fetches against this hash, the same integrity
+# the js runtime gets from its QUICKJS_COMMIT pin and the lua runtime from
+# its tarball sha256.
+MPY_COMMIT=ecfdd5d6f9be971852003c2049600dc7b3e2a838
 EMCC="${EMCC:-emcc}"
 command -v "$EMCC" >/dev/null || EMCC="$HOME/code/mine/emsdk/upstream/emscripten/emcc"
 
 if [ ! -d vendor/micropython ]; then
   mkdir -p vendor
-  git clone --depth 1 --branch "$MPY_VERSION" \
-    https://github.com/micropython/micropython.git vendor/micropython
+  git init -q vendor/micropython
+  git -C vendor/micropython remote add origin https://github.com/micropython/micropython.git
+  git -C vendor/micropython fetch -q --depth 1 origin "$MPY_COMMIT"
+  git -C vendor/micropython checkout -q FETCH_HEAD
 fi
 
 # Generate the embed sources against OUR mpconfigport.h (float, string
