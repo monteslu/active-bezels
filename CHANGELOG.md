@@ -22,9 +22,9 @@
 - **`isolate_sprite(slot)`** -- the inverse: emit ONLY the marked slots,
   through the normal CHR + OAM + palette path, onto whatever surface the
   draw targets. Gives one entity its own layer, properly rendered.
-  Identify entities by SLOT rather than colour: in SMB the player, the red
-  koopa and the mushroom share sprite palette 0 while the fire flower does
-  not, so a colour test exempts the wrong set.
+  Identify entities by SLOT rather than colour: a game is free to draw the
+  player and several unrelated entities from one sprite palette while a
+  fourth uses another, so a colour test exempts the wrong set.
 - **`surface_filter` takes an optional mask texture**, bound as `u_mask`
   and sampled NEAREST, so a shader can key off structure the framebuffer
   cannot express (a per-cell tile-class map, a per-pixel entity map).

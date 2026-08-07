@@ -50,8 +50,9 @@ wash laid over a game rather than as the game changing.
 **Take one entity out.** `hide_cell` / `hide_sprite` drop a background cell
 or an OAM slot from the render entirely, and `isolate_sprite` renders only
 the marked slots onto a surface of your choosing. Entities are identified by
-slot, which is live machine state: colour cannot do it (in Super Mario Bros.
-the player, the red koopa and the mushroom all share sprite palette 0).
+slot, which is live machine state: colour cannot do it, because a game is
+free to draw the player and several unrelated entities from the same sprite
+palette -- and often does.
 
 ## What this repository is
 

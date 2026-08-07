@@ -314,10 +314,10 @@ marked slots, through the normal CHR + OAM + palette path, onto whatever
 surface the draw targets. This is how a package gives one character its own
 layer without screen-scraping it.
 
-Identify entities by SLOT, not by colour. In Super Mario Bros. the player,
-the red koopa and the mushroom all use sprite palette 0 while the fire
-flower does not, so a palette test exempts three entities and misses a
-fourth -- which looks arbitrary on screen. The slot is the only thing that
+Identify entities by SLOT, not by colour. A game is free to draw the player
+and several unrelated entities from one sprite palette while a fourth uses
+another -- a common arrangement -- so a palette test exempts the wrong set
+and the result looks arbitrary on screen. The slot is the only thing that
 says which entity a pixel belongs to, and it is live machine state no
 post-filter can recover.
 
