@@ -248,10 +248,19 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
 
   init(skipContext = false) {
     if (!skipContext) {
-      if (!gl.createContext(this.outputWidth, this.outputHeight)) throw new Error('no OpenGL ES context');
+      /* createContext returns a context handle (int > 0; older builds
+       * returned a boolean, and the truthiness check covers both). Every
+       * makeCurrent/swap/destroy below passes this.ctxId so THIS
+       * compositor's GL work lands in THIS compositor's context — with the
+       * old process-global context, one session's bezel could bind the
+       * shared context to its window and every other consumer (another
+       * session's cart, another bezel) started drawing into that window. */
+      const ctxId = gl.createContext(this.outputWidth, this.outputHeight);
+      if (!ctxId) throw new Error('no OpenGL ES context');
+      this.ctxId = typeof ctxId === 'number' ? ctxId : undefined;
       this.contextOwned = true;
     }
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
     /* Upload guard: glTexImage2D reads width*height*4 bytes from the source
      * unconditionally (Mesa memcpy). A short buffer is an out-of-bounds READ
      * and a driver-level SIGSEGV that no JS try/catch sees -- turn it into a
@@ -472,7 +481,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   surfaceCreate(width, height) {
     const handle = super.surfaceCreate(width, height);
     if (!handle || !this.gpuReady) return handle;
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
     const texture = this._newTexture();
     gl.glBindTexture(C.TEXTURE_2D, texture);
     gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.LINEAR);
@@ -573,7 +582,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     if (!this.gpuReady) return 0;
     const target = this.surfaces.get(destination);
     if (!target) return 0;
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
 
     /* IN-PLACE filter (source === destination) is the natural way to write
      * this from a guest -- "run my shader over this surface" -- and it is
@@ -697,7 +706,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     if (!this.gpuReady) return 0;
     const target = this.surfaces.get(destination);
     if (!target) return 0;
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
 
     this.chains ??= new Map();
     let chain = this.chains.get(presetPath);
@@ -902,13 +911,27 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   migrateToWindow(nativeHandle) {
     if (!this.gpuReady || !nativeHandle) return 0;
     try {
-      gl.makeCurrent?.();
+      gl.makeCurrent?.(this.ctxId);
       gl.glFinish?.();
-      gl.destroyContext();
-      if (!gl.createContext(this.outputWidth, this.outputHeight,
-        { windowSurface: true, nativeWindow: nativeHandle })) {
+      /* Surface-swap first: bind a window surface to the LIVE context.
+       * Nothing is destroyed, so every texture, FBO, surface and compiled
+       * program survives untouched — no rebuild, no re-upload, none of the
+       * "effect works headless but not in the window" class of loss. Fails
+       * non-destructively (pbuffer stays current) when the context's config
+       * has no window bit. */
+      if (gl.attachWindow?.(nativeHandle, this.ctxId)) {
+        gl.setSwapInterval?.(1, this.ctxId);
+        this.windowMode = true;
+        return 1;
+      }
+      gl.destroyContext(this.ctxId);
+      const winCtx = gl.createContext(this.outputWidth, this.outputHeight,
+        { windowSurface: true, nativeWindow: nativeHandle });
+      if (winCtx) this.ctxId = typeof winCtx === 'number' ? winCtx : undefined;
+      if (!winCtx) {
         /* window bind failed: restore a headless context and carry on */
-        gl.createContext(this.outputWidth, this.outputHeight);
+        const headless = gl.createContext(this.outputWidth, this.outputHeight);
+        this.ctxId = typeof headless === 'number' ? headless : undefined;
         this.gpuReady = false;
         this.gpuTextures = new Map();
         this.init(true);
@@ -916,7 +939,12 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
         this._recreateSurfaces();
         return 0;
       }
-      gl.setSwapInterval?.(0);   /* the host loop paces; never block on vsync */
+      /* Block on vsync. The GPU blit+swap costs ~0.2ms, so there is budget
+       * to wait for vblank — and NOT waiting means timer-paced swaps land at
+       * random phases of the refresh: frames shown twice or skipped, i.e.
+       * microstutter at a "perfect" 60fps. (interval 0 was only ever right
+       * for the old software present, whose 13.6ms had no room to block.) */
+      gl.setSwapInterval?.(1, this.ctxId);
       this.windowMode = true;
       this.gpuReady = false;     /* init(true) flips it back on */
       this.gpuTextures = new Map();
@@ -956,7 +984,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   _recreateSurfaces() {
     if (!this.surfaces.size) return;
     if (!this.gpuReady) return;
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
     for (const [handle, surface] of this.surfaces) {
       const { width, height } = surface;
       const texture = this._newTexture();
@@ -989,7 +1017,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
 
   presentWindow(dstX, dstY, dstW, dstH, winW, winH) {
     if (!this.windowMode || !this.gpuReady) return 0;
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
     gl.glBindFramebuffer(0x8ca9 /* DRAW_FRAMEBUFFER */, 0);
     gl.glViewport(0, 0, winW, winH);
     gl.glDisable(C.SCISSOR_TEST);
@@ -1000,7 +1028,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     const gy = winH - dstY - dstH;
     gl.glBlitFramebuffer(0, 0, this.outputWidth, this.outputHeight,
       dstX, gy, dstX + dstW, gy + dstH, C.COLOR_BUFFER_BIT, C.LINEAR);
-    gl.swapBuffers();
+    gl.swapBuffers(this.ctxId);
     return 1;
   }
 
@@ -1013,7 +1041,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
      * the SDL window's GL context is current on this thread between
      * composes, and uploading into it segfaults in the driver (Mesa memcpy
      * via glTexImage2D). Assert our context before ANY GL work. */
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
     const id = this._newTexture();
     gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.NEAREST);
     gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.NEAREST);
@@ -1028,7 +1056,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     const id = this.gpuTextures.get(handle);
     if (id && this.gpuReady) {
       /* Tick-time GL, same as _uploadPersistent: assert our context. */
-      gl.makeCurrent?.();
+      gl.makeCurrent?.(this.ctxId);
       gl.glActiveTexture(C.TEXTURE0);
       gl.glBindTexture(C.TEXTURE_2D, id);
       gl.glTexSubImage2D(C.TEXTURE_2D, 0, x, y, w, h,
@@ -1041,7 +1069,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     const id = this.gpuTextures.get(handle);
     /* Same tick-time hazard as _uploadPersistent: assert our context. */
     if (id) {
-      gl.makeCurrent?.();
+      gl.makeCurrent?.(this.ctxId);
       gl.glDeleteTextures(1, new Uint32Array([id]));
     }
     this.gpuTextures.delete(handle);
@@ -1259,7 +1287,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
         w, h,
       }];
     });
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
     /* With an effect loaded, draw the scene into the OFFSCREEN target so the
      * shader has something to sample; otherwise draw straight to the default
      * framebuffer as before. Binding this per frame (rather than once at init)
@@ -1450,7 +1478,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     if (!this.gpuReady) {
       return { rgba: this.output, width: this.outputWidth, height: this.outputHeight };
     }
-    gl.makeCurrent?.();
+    gl.makeCurrent?.(this.ctxId);
     gl.glBindFramebuffer(0x8ca8 /* READ_FRAMEBUFFER */,
       (this.windowMode || this.effect) ? this.sceneFbo : 0);
     if (this.output.buffer.byteLength === 0) {
@@ -1486,7 +1514,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     this.gpuTextures.clear();
     super.destroy();
     if (this.contextOwned) {
-      try { gl.destroyContext(); } catch {}
+      try { gl.destroyContext(this.ctxId); } catch {}
       this.contextOwned = false;
     }
     this.gpuReady = false;
