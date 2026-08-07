@@ -183,14 +183,15 @@ static mp_obj_t prof_clear(const pyp_desc *d) {
 static void read_view(size_t n, const mp_obj_t *a, ab_prof_view *v,
                       double def_scale, ab_prof_id prof) {
   v->x = 0; v->y = 0; v->scale = def_scale;
-  v->bg_surface = 0; v->spr_surface = 0;
+  v->bg_surface = 0; v->spr_surface = 0; v->solid_surface = 0;
   if (n > 0) {
     opt_num(a[0], "x", &v->x);
     opt_num(a[0], "y", &v->y);
     opt_num(a[0], "scale", &v->scale);
     v->bg_surface  = opt_int(a[0], "bg_surface", 0);
     v->spr_surface = opt_int(a[0], "spr_surface", 0);
-    if ((v->bg_surface || v->spr_surface) && !ab_prof_layers_supported(prof))
+    v->solid_surface = opt_int(a[0], "solid_surface", 0);
+    if ((v->bg_surface || v->spr_surface || v->solid_surface) && !ab_prof_layers_supported(prof))
       mp_raise_msg_varg(&mp_type_ValueError,
         MP_ERROR_TEXT("draw: bg_surface/spr_surface not supported on this "
                       "profile (its layers are resolved per pixel by the "

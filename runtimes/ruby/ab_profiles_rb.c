@@ -205,13 +205,14 @@ static mrb_value prof_clear(mrb_state *m, mrb_value self) {
 static void read_view(mrb_state *m, mrb_value opts, ab_prof_view *v,
                       double def_scale, ab_prof_id prof) {
   v->x = 0; v->y = 0; v->scale = def_scale;
-  v->bg_surface = 0; v->spr_surface = 0;
+  v->bg_surface = 0; v->spr_surface = 0; v->solid_surface = 0;
   ropt_num(m, opts, "x", &v->x);
   ropt_num(m, opts, "y", &v->y);
   ropt_num(m, opts, "scale", &v->scale);
   v->bg_surface  = ropt_int(m, opts, "bg_surface", 0);
   v->spr_surface = ropt_int(m, opts, "spr_surface", 0);
-  if ((v->bg_surface || v->spr_surface) && !ab_prof_layers_supported(prof))
+  v->solid_surface = ropt_int(m, opts, "solid_surface", 0);
+  if ((v->bg_surface || v->spr_surface || v->solid_surface) && !ab_prof_layers_supported(prof))
     mrb_raise(m, exc_runtime(m),
       "draw: bg_surface/spr_surface not supported on this profile "
       "(its layers are resolved per pixel by the core, so there is "

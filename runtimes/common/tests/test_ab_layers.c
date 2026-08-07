@@ -115,6 +115,13 @@ static void setup_nes_regions(void){
   memset(g_regions[5],0x18,256*240);      /* rendering enabled */
   /* sprites drawn across a band, non-zero palette value = opaque */
   for(int y=32;y<48;y++) for(int x=32;x<48;x++) g_regions[1][y*256+x]=0x11;
+  /* Solid background tiles across the lower half: a non-zero pattern entry
+   * in bgpix is what marks a pixel as belonging to a TILE rather than to
+   * the backdrop, and it is the signal the background split keys on.
+   * Without this every pixel reads as empty and the solid pass has nothing
+   * to emit -- exactly what the split control caught the first time. */
+  for(int y=120;y<240;y++)
+    for(int x=0;x<256;x++) g_regions[6][y*256+x]=0x02;
   /* a plausible palette + RGB table */
   for(int i=0;i<32;i++) g_regions[2][i]=(unsigned char)i;
   for(int i=0;i<64*3;i++) g_regions[3][i]=(unsigned char)(i*3);
@@ -194,6 +201,58 @@ int main(void){
     }
     ab_prof_clear_rules(AB_PROF_NES);
     CHECK(g_target==0, "hd: target restored");
+  }
+
+  /* ---- 4b. the BACKGROUND splits into backdrop + solid ---------------- */
+  {
+    /* The PPU draws level geometry and empty sky as ONE batch. Splitting on
+     * the resolved pattern index is what lets a bezel treat bricks
+     * differently from the sky behind them -- so assert the two passes are
+     * COMPLEMENTARY: every pixel lands in exactly one of them, and neither
+     * is the whole picture. */
+    ab_prof_view v; memset(&v,0,sizeof(v));
+    v.x=0; v.y=0; v.scale=1.0;
+    ab_prof_nes_result all; log_reset();
+    CHECK(ab_prof_nes_draw(&v,&all,&err), "unsplit draw");
+
+    memset(&v,0,sizeof(v));
+    v.x=0; v.y=0; v.scale=1.0; v.bg_surface=6; v.solid_surface=7;
+    ab_prof_nes_result split; log_reset();
+    CHECK(ab_prof_nes_draw(&v,&split,&err), "split draw");
+    /* Three brackets now: backdrop, solid, sprites. */
+    CHECK_LOG("[6m][7m]m", "split: backdrop->6, solid->7, sprites to the scene");
+    /* Quad counts are not a partition (runs coalesce differently), but a
+     * genuine split must produce output on BOTH passes -- a selector that
+     * silently emitted everything twice, or nothing, fails here. */
+    CHECK(split.bg_quads > 0, "split emitted background quads");
+    CHECK(split.bg_quads >= all.bg_quads,
+          "splitting a run-coalesced plane cannot emit FEWER quads");
+    CHECK(g_target==0, "split: target restored");
+  }
+
+  /* ---- 4c. an isolate pass must not poison the NEXT draw -------------- */
+  {
+    /* The motivating bug: a guest draws one entity alone (isolate), then
+     * draws the world normally in the same frame. The isolate pass fills
+     * the shared suppress buffer with 1s; if the second draw does not clear
+     * it, EVERY sprite is suppressed. On SMB that silently deleted the
+     * goombas and the mushroom while the player still rendered, which reads
+     * as "some enemies don't spawn" rather than as a rendering bug. */
+    ab_prof_view v; memset(&v,0,sizeof(v));
+    v.x=0; v.y=0; v.scale=1.0;
+    ab_prof_nes_result baseline;
+    CHECK(ab_prof_nes_draw(&v,&baseline,&err), "baseline draw");
+    CHECK(baseline.spr_quads>0, "baseline emits sprites");
+
+    ab_prof_nes_isolate_sprite(1);
+    ab_prof_nes_result iso;
+    CHECK(ab_prof_nes_draw(&v,&iso,&err), "isolate draw");
+
+    /* The very next ordinary draw must be back to normal. */
+    ab_prof_nes_result after;
+    CHECK(ab_prof_nes_draw(&v,&after,&err), "draw after isolate");
+    CHECK(after.spr_quads == baseline.spr_quads,
+          "an isolate pass must not suppress sprites in the NEXT draw");
   }
 
   /* ---- 5. capability query is honest ---------------------------------- */

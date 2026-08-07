@@ -54,7 +54,12 @@ const C = {
   COMPILE_STATUS: 0x8b81, LINK_STATUS: 0x8b82,
   ARRAY_BUFFER: 0x8892, STREAM_DRAW: 0x88e0, FLOAT: 0x1406,
   TRIANGLES: 0x0004, TEXTURE_2D: 0x0de1, RGBA: 0x1908,
-  UNSIGNED_BYTE: 0x1401, TEXTURE0: 0x84c0,
+  /* TEXTURE1 is the second texture unit, where surfaceFilter binds an
+   * optional `u_mask`. It has to be listed here: this table is hand-written,
+   * a missing entry is `undefined`, and passing that to glActiveTexture
+   * throws "A number was expected" from the native binding -- which surfaces
+   * as a guest trap with no obvious connection to the constant. */
+  UNSIGNED_BYTE: 0x1401, TEXTURE0: 0x84c0, TEXTURE1: 0x84c1,
   TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800,
   TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803,
   NEAREST: 0x2600, LINEAR: 0x2601, CLAMP_TO_EDGE: 0x812f,
@@ -378,8 +383,18 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     this.vao = vao[0];
     this.vbo = vbo[0];
     this.gameTexture = this._newTexture();
-    /* handle -> {fbo, texture, width, height}; allocated once, reused */
-    this.surfaces = new Map();
+    /* handle -> {fbo, texture, width, height}; allocated once, reused.
+     *
+     * PRESERVED across a re-init. init(true) runs when the context is
+     * recreated (migrateToWindow rebinding onto a window), and the guest is
+     * still holding surface handles it obtained before that. Dropping the
+     * map here left every one of them unresolvable: surface_target bound
+     * nothing and surface_filter returned 0 with no error anywhere, so a
+     * layered bezel silently lost its effects the moment a playtest window
+     * opened -- the headless capture looked right and the window did not.
+     * The GL objects in these entries ARE dead at this point; _recreateSurfaces
+     * rebuilds them under the same handles right after init returns. */
+    this.surfaces ??= new Map();
     /* shader source -> compiled program (or null for a known failure), so a
      * per-frame surfaceFilter call does not recompile every frame */
     this.filterPrograms = new Map();
@@ -522,7 +537,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
    * all. Queueing puts the filter after the draws the guest issued before it,
    * which is what the guest wrote and what the CPU path's ordering implies.
    */
-  surfaceFilter(source, destination, shaderSource, gamePixels, gameWidth, gameHeight) {
+  surfaceFilter(source, destination, shaderSource, gamePixels, gameWidth, gameHeight, maskTexture = 0) {
     if (!this.gpuReady) return 0;
     if (!this.surfaces.get(destination)) return 0;
     /* Compile eagerly: a bad shader must report failure to the guest NOW,
@@ -531,7 +546,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     if (!this._filterProgram(shaderSource)) return 0;
     this._push({
       kind: 'surface-filter', source, destination, shaderSource,
-      gamePixels, gameWidth, gameHeight,
+      gamePixels, gameWidth, gameHeight, maskTexture,
     });
     return 1;
   }
@@ -554,7 +569,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   }
 
   _surfaceFilterNow(source, destination, shaderSource, gamePixels, gameWidth, gameHeight,
-                    inPlace = false) {
+                    inPlace = false, maskTexture = 0) {
     if (!this.gpuReady) return 0;
     const target = this.surfaces.get(destination);
     if (!target) return 0;
@@ -574,7 +589,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       const scratch = this._filterScratch(target.width, target.height);
       if (!scratch) return 0;
       const ok = this._surfaceFilterNow(source, scratch, shaderSource,
-        gamePixels, gameWidth, gameHeight, true);
+        gamePixels, gameWidth, gameHeight, true, maskTexture);
       if (!ok) return 0;
       this._swapSurfaceTextures(destination, scratch);
       return 1;
@@ -638,6 +653,32 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
     gl.glUniform2f(u('u_resolution'), target.width, target.height);
     gl.glUniform2f(u('u_source_size'), sw, sh);
     gl.glUniform1f(u('u_time'), (this.effectTimeMs ?? 0) / 1000);
+    /* Optional SECOND sampler, bound to unit 1 as `u_mask`.
+     *
+     * A filter that only ever sees the finished picture can key off colour
+     * and nothing else -- which is exactly the ceiling a post-processing
+     * filter already hits. The interesting bezels key off the MACHINE: which
+     * nametable tile is in this cell, which sprite slot this pixel came
+     * from, which room the player is in. That is data the guest can read and
+     * the framebuffer cannot express, so it needs a way to hand a per-pixel
+     * (or per-cell) lookup to its shader.
+     *
+     * `maskTexture` on the filter call binds any guest texture here. NEAREST
+     * so a cell-resolution mask stays blocky and a pixel is unambiguously
+     * inside one cell -- filtering it would smear class boundaries and put
+     * pixels in between two classes, which is meaningless for a lookup. */
+    if (maskTexture) {
+      const maskId = this.gpuTextures.get(maskTexture);
+      if (maskId) {
+        gl.glActiveTexture(C.TEXTURE1);
+        gl.glBindTexture(C.TEXTURE_2D, maskId);
+        gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.NEAREST);
+        gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.NEAREST);
+        const loc = u('u_mask');
+        if (loc !== null && loc !== undefined && loc !== -1) gl.glUniform1i(loc, 1);
+        gl.glActiveTexture(C.TEXTURE0);
+      }
+    }
     gl.glDrawArrays(C.TRIANGLES, 0, 6);
     gl.glEnable(C.BLEND);
     gl.glBindFramebuffer(C.FRAMEBUFFER, 0);
@@ -872,6 +913,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
         this.gpuTextures = new Map();
         this.init(true);
         for (const handle of this.textures.keys()) this._uploadPersistent(handle);
+        this._recreateSurfaces();
         return 0;
       }
       gl.setSwapInterval?.(0);   /* the host loop paces; never block on vsync */
@@ -880,6 +922,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
       this.gpuTextures = new Map();
       this.init(true);
       for (const handle of this.textures.keys()) this._uploadPersistent(handle);
+      this._recreateSurfaces();
       return 1;
     } catch (err) {
       console.error(`[active-bezel] migrateToWindow failed: ${err.message}`);
@@ -888,6 +931,62 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
   }
 
   /* Blit the composed scene to the window backbuffer (letterboxed) and swap. */
+  /*
+   * Rebuild every offscreen surface after a context change.
+   *
+   * migrateToWindow destroys the GL context and recreates it against the
+   * window. Persistent TEXTURES survive because this.textures keeps their
+   * CPU pixels and _uploadPersistent re-uploads them under the same
+   * handles -- but a SURFACE is an FBO plus a render target, owned entirely
+   * by the context, with no CPU copy to restore from. Left alone, every
+   * surface handle a guest is holding points at a dead object in a
+   * destroyed context: surface_target binds nothing, surface_filter finds
+   * no destination and returns 0, and the guest's layers silently stop
+   * being drawn or shaded. That is invisible from the guest's side -- the
+   * handles are still non-zero, so a bezel that checked them at init has no
+   * way to learn they died -- and it presents as "the effect works in a
+   * headless capture but not in the window", which is exactly how it was
+   * found.
+   *
+   * Contents are NOT preserved: a surface is rebuilt empty. That is
+   * correct for the per-frame use (a layer is redrawn every tick anyway),
+   * and there is nothing to preserve from -- the pixels only ever existed
+   * in the old context.
+   */
+  _recreateSurfaces() {
+    if (!this.surfaces.size) return;
+    if (!this.gpuReady) return;
+    gl.makeCurrent?.();
+    for (const [handle, surface] of this.surfaces) {
+      const { width, height } = surface;
+      const texture = this._newTexture();
+      gl.glBindTexture(C.TEXTURE_2D, texture);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MIN_FILTER, C.LINEAR);
+      gl.glTexParameteri(C.TEXTURE_2D, C.TEXTURE_MAG_FILTER, C.LINEAR);
+      gl.glTexImage2D(C.TEXTURE_2D, 0, C.RGBA, width, height, 0,
+        C.RGBA, C.UNSIGNED_BYTE, null);
+      const fbo = new Uint32Array(1);
+      gl.glGenFramebuffers(1, fbo);
+      gl.glBindFramebuffer(C.FRAMEBUFFER, fbo[0]);
+      gl.glFramebufferTexture2D(C.FRAMEBUFFER, C.COLOR_ATTACHMENT0,
+        C.TEXTURE_2D, texture, 0);
+      const ok = gl.glCheckFramebufferStatus(C.FRAMEBUFFER) === C.FRAMEBUFFER_COMPLETE;
+      gl.glBindFramebuffer(C.FRAMEBUFFER, 0);
+      if (!ok) {
+        gl.glDeleteFramebuffers(1, fbo);
+        gl.glDeleteTextures(1, new Uint32Array([texture]));
+        continue;
+      }
+      surface.texture = texture;
+      surface.fbo = fbo[0];
+      this.gpuTextures.set(handle, texture);
+    }
+    /* Compiled programs belonged to the destroyed context too. Drop the
+     * cache so the next filter recompiles into the new one rather than
+     * using a stale program id. */
+    this.filterPrograms = new Map();
+  }
+
   presentWindow(dstX, dstY, dstW, dstH, winW, winH) {
     if (!this.windowMode || !this.gpuReady) return 0;
     gl.makeCurrent?.();
@@ -1222,7 +1321,7 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
          * draws into it. */
         this._surfaceFilterNow(command.source, command.destination,
           command.shaderSource, command.gamePixels,
-          command.gameWidth, command.gameHeight);
+          command.gameWidth, command.gameHeight, false, command.maskTexture);
         bindTarget();
         gl.glEnable(C.BLEND);
         gl.glBlendFunc(C.SRC_ALPHA, C.ONE_MINUS_SRC_ALPHA);

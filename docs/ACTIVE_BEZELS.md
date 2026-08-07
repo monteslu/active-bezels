@@ -277,6 +277,85 @@ The host imports include:
 Colors are packed `0xRRGGBBAA`. Geometry uses logical canvas coordinates.
 Nearest sampling is the pixel-art default.
 
+
+## Layer control (redraw profiles)
+
+A redraw does not have to be all-or-nothing. Three mechanisms let a package
+take a class of pixels out of the normal render and own it.
+
+**Route the batches apart.** `nes.draw` and `gb.draw` accept
+`bg_surface`, `solid_surface` and `spr_surface`. A single draw -- one frame
+read, one sprite evaluation -- emits the empty backdrop, the solid tiles and
+the sprites onto three different surfaces:
+
+```lua
+nes.draw{ x = X, y = 0, scale = S,
+          bg_surface = sky, solid_surface = tiles, spr_surface = actors }
+```
+
+The split is on the RESOLVED pattern index, which is why it cannot be done
+downstream: the PPU draws the level geometry and the empty sky as one
+background layer, so a filter over the finished frame sees the bricks and
+the sky as the same pixels and must treat them identically. That is the
+ceiling every post-processing filter hits, and it is what makes an effect
+read as a wash laid over the game rather than as the game itself changing.
+
+**Suppress what you will draw yourself.** `nes.hide_cell(cx, cy)` drops an
+8x8 background cell; `nes.hide_sprite(slot)` drops an OAM slot. The pixels
+are never emitted, so there is nothing to erase and nothing to paint over --
+the same contract the HD substitution path has always had ("a replaced
+sprite is simply not drawn"). Erasing after the fact is the alternative and
+it is worse in a specific way: an 8x8 cell contains whatever is BEHIND the
+entity, so copying it out of the finished frame drags the hill or the bricks
+along with it and tears a matching hole in the layer underneath.
+
+**Render one entity alone.** `nes.isolate_sprite(slot)` emits ONLY the
+marked slots, through the normal CHR + OAM + palette path, onto whatever
+surface the draw targets. This is how a package gives one character its own
+layer without screen-scraping it.
+
+Identify entities by SLOT, not by colour. In Super Mario Bros. the player,
+the red koopa and the mushroom all use sprite palette 0 while the fire
+flower does not, so a palette test exempts three entities and misses a
+fourth -- which looks arbitrary on screen. The slot is the only thing that
+says which entity a pixel belongs to, and it is live machine state no
+post-filter can recover.
+
+All three are CONSUMED BY EACH DRAW, so a guest re-marks every frame. Marks
+that survive a draw compound: an isolate list left standing makes every
+later draw emit only those slots, which presents as "most sprites stopped
+rendering" long after the call that set it.
+
+`ab_prof_layers_supported()` reports which profiles can honour the split.
+NES and GB can; MD, MSX and PCE consume the core's resolved per-pixel planes
+(priority, shadow and highlight already applied), so there is no separable
+sprite batch to route, and the bindings REFUSE the option rather than
+ignoring it.
+
+## When a script fails
+
+A script error is caught by its runtime and reported three ways, so it is
+never silent:
+
+- **On screen.** A panel across the top half of the frame, in an embedded
+  TrueType face at a size that survives a downscaled screenshot, on an
+  opaque backing. The game keeps running underneath so the failure stays in
+  context. The font is compiled into the runtime -- it cannot come from
+  package assets, because the panel exists precisely for when the package is
+  broken.
+- **On stderr**, prefixed `AB-ERROR:`, with no debug flag required. Ordinary
+  `ab.log` output stays behind `RETROEMU_DEBUG` / `AB_LOG`; a crash is not
+  ordinary logging. `AB_SILENT=1` suppresses it for a host that surfaces the
+  error in its own UI.
+- **Programmatically**, as `runtime.status().scriptError`. This is the one
+  that matters for tooling: the host's tick call returns NORMALLY for a
+  script error, so a host-side `error` field stays null and every automated
+  health check passes while the screen shows a stack trace. romdev hoists it
+  as `BEZEL_SCRIPT_ERROR`.
+
+A reload clears the latch, so a fixed script recovers without restarting the
+host.
+
 ## Memory
 
 `system_ram`, `save_ram`, `video_ram`, and `rtc` retain their libretro IDs.

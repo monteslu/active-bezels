@@ -41,7 +41,7 @@ fi
 # and the JS-trampoline default cannot work under a host that provides only
 # the ab_host module. (Same lesson as wasmcart interpreters.) No LTO: it
 # breaks the wasm-sjlj path.
-"$EMCC" runtime.c ab_profiles_lua.c ../common/ab_batteries.c ../common/ab_render.c \
+"$EMCC" runtime.c ab_profiles_lua.c ../common/ab_batteries.c ../common/ab_panel.c ../common/ab_panel_font.c ../common/ab_render.c \
   ../common/ab_profiles.c \
   ../common/ab_nes.c ../common/ab_gb.c ../common/ab_md.c ../common/ab_snes.c \
   ../common/ab_msx.c ../common/ab_pce.c \

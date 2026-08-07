@@ -83,6 +83,7 @@ typedef struct {
 
 typedef struct {
   unsigned char *bytes;
+  int owns_bytes;              /* 0 = borrowed (embedded panel font) */
   stbtt_fontinfo info;
   int ascent, descent, line_gap;   /* unscaled font units */
   FontAtlas sizes[FONT_SIZE_CACHE];
@@ -133,6 +134,27 @@ static FontAtlas *font_atlas(Font *font, int32_t px) {
   return slot->texture > 0 ? slot : NULL;
 }
 
+int32_t ab_bat_font_load_bytes(const unsigned char *bytes, int len,
+                               const char **out_err) {
+  (void)len;
+  if (g_font_count >= FONT_MAX) { if (out_err) *out_err = "too many fonts"; return 0; }
+  if (!bytes) { if (out_err) *out_err = "no font bytes"; return 0; }
+  Font *font = &g_fonts[g_font_count];
+  /* Borrowed: the caller's storage outlives us. Keep the POINTER -- the
+   * atlas bake reads it and the liveness check tests it -- and record that
+   * we must not free it. */
+  font->bytes = (unsigned char *)bytes;
+  font->owns_bytes = 0;
+  if (!stbtt_InitFont(&font->info, bytes, 0)) {
+    font->bytes = NULL;
+    if (out_err) *out_err = "not a TrueType font";
+    return 0;
+  }
+  stbtt_GetFontVMetrics(&font->info, &font->ascent, &font->descent, &font->line_gap);
+  font->used = 0;
+  return ++g_font_count;
+}
+
 int32_t ab_bat_font_load(const char *name, int name_len, const char **out_err) {
   if (g_font_count >= FONT_MAX) { if (out_err) *out_err = "too many fonts"; return 0; }
   int len = 0;
@@ -140,6 +162,7 @@ int32_t ab_bat_font_load(const char *name, int name_len, const char **out_err) {
   if (!bytes) return 0;
   Font *font = &g_fonts[g_font_count];
   font->bytes = bytes;
+  font->owns_bytes = 1;
   if (!stbtt_InitFont(&font->info, font->bytes, 0)) {
     free(font->bytes); font->bytes = NULL;
     if (out_err) *out_err = "not a TrueType font";
@@ -216,8 +239,11 @@ void ab_bat_shutdown(void) {
   for (int32_t i = 0; i < g_font_count; i++) {
     for (int32_t s = 0; s < g_fonts[i].used; s++)
       if (g_fonts[i].sizes[s].texture > 0) ab_texture_destroy(g_fonts[i].sizes[s].texture);
-    free(g_fonts[i].bytes);
+    /* Only free what we allocated: the embedded panel font is a static
+     * array, and free()ing it would be undefined behaviour. */
+    if (g_fonts[i].owns_bytes) free(g_fonts[i].bytes);
     g_fonts[i].bytes = NULL;
+    g_fonts[i].owns_bytes = 0;
     g_fonts[i].used = 0;
   }
   g_font_count = 0;

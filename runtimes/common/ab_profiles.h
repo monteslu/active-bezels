@@ -63,6 +63,13 @@ typedef struct {
   double x, y, scale;
   int32_t bg_surface;    /* 0 = current target */
   int32_t spr_surface;   /* 0 = current target */
+  /* THIRD LAYER (NES). The PPU draws the level geometry and the empty sky
+   * as one background batch, so treating them together is exactly what
+   * makes an effect read as a global filter -- the bricks get whatever the
+   * sky gets. Set this and the background splits on the RESOLVED pattern
+   * index: solid tile pixels go here, backdrop pixels stay on bg_surface.
+   * 0 keeps the historical single-background behaviour. */
+  int32_t solid_surface;
 } ab_prof_view;
 
 /* Substitution management is identical across the five sprite profiles.
@@ -100,6 +107,40 @@ typedef struct {
 } ab_prof_nes_result;
 
 int  ab_prof_nes_bind(const char **err);
+/* Mark an 8x8 CELL of the background as not-to-be-drawn for the next
+ * draw. Cell coords are in the core's visible frame (32x28 cells for
+ * NES). The mask is consumed and cleared by each draw, so a guest
+ * re-marks every frame -- a stale mask silently hiding tiles would be
+ * far worse than the cost of re-marking. */
+void ab_prof_nes_hide_cell(int cx, int cy);
+/* Suppress an OAM SLOT from the sprite pass. The slot's pixels are simply
+ * not emitted, so a guest can take an entity out of the normal render and
+ * draw it itself -- the same "never drawn, so nothing to erase" contract
+ * hide_cell gives background tiles.
+ *
+ * By SLOT, because that is the only thing that identifies an ENTITY. Colour
+ * cannot: in SMB the player, the red koopa and the mushroom all share
+ * sprite palette 0, so a palette test pulls out three entities and misses
+ * the fire flower, which looks arbitrary on screen.
+ *
+ * Cleared by every draw, so a guest re-marks each frame. */
+void ab_prof_nes_hide_sprite(int slot);
+
+/* The INVERSE: emit ONLY the marked slots on the next draw, and nothing
+ * else in the sprite layer.
+ *
+ * This is what lets a guest give one entity its own surface without
+ * screen-scraping it. Copying the entity's OAM cells out of the finished
+ * frame looks equivalent and is not: a cell contains whatever is BEHIND the
+ * sprite, so the copy drags the hill or the bricks along with it and tears
+ * a rectangle out of the layer underneath. Rendering the slot through the
+ * normal path reconstructs it from CHR + OAM + palette, with the same
+ * transparency and priority rules as any other sprite.
+ *
+ * Mutually exclusive with hide_sprite: setting both is a contradiction, and
+ * the isolate list wins. Cleared by every draw. */
+void ab_prof_nes_isolate_sprite(int slot);
+void ab_prof_nes_clear_hidden(void);
 int  ab_prof_nes_draw(const ab_prof_view *v, ab_prof_nes_result *r,
                       const char **err);
 int  ab_prof_nes_sprite_bounds(int out[4]);        /* 1 = box valid */

@@ -72,7 +72,7 @@ static int field_tri(lua_State *S, int idx, const char *field) {
 static int read_view(lua_State *S, ab_prof_view *v, double def_scale,
                      ab_prof_id prof, const char **err) {
   v->x = 0; v->y = 0; v->scale = def_scale;
-  v->bg_surface = 0; v->spr_surface = 0;
+  v->bg_surface = 0; v->spr_surface = 0; v->solid_surface = 0;
   *err = NULL;
   if (lua_istable(S, 1)) {
     field_num(S, 1, "x", &v->x);
@@ -80,7 +80,8 @@ static int read_view(lua_State *S, ab_prof_view *v, double def_scale,
     field_num(S, 1, "scale", &v->scale);
     v->bg_surface  = field_int(S, 1, "bg_surface", 0);
     v->spr_surface = field_int(S, 1, "spr_surface", 0);
-    if ((v->bg_surface || v->spr_surface) &&
+    v->solid_surface = field_int(S, 1, "solid_surface", 0);
+    if ((v->bg_surface || v->spr_surface || v->solid_surface) &&
         !ab_prof_layers_supported(prof)) {
       *err = "draw: bg_surface/spr_surface not supported on this profile "
              "(its layers are resolved per pixel by the core, so there is "
@@ -235,6 +236,36 @@ static int l_nes_draw(lua_State *S) {
   return 1;
 }
 
+/* nes.hide_cell(cx, cy) -- mark one 8x8 BACKGROUND cell as not-to-be-drawn
+ * for the next nes.draw. The redraw simply never emits those pixels, so the
+ * guest can own that class of tiles outright: no erase, no paint-over, and
+ * the tiles never receive whatever treatment the layer gets. Cleared by
+ * every draw, so a guest re-marks each frame. */
+/* nes.hide_sprite(slot) -- take one OAM slot out of the sprite pass. The
+ * guest then draws that entity itself, from the clean frame, at whatever
+ * point in the composite it wants. */
+static int l_nes_hide_sprite(lua_State *S) {
+  ensure_bound(S, &PROFS[AB_PROF_NES]);
+  ab_prof_nes_hide_sprite((int)luaL_checkinteger(S, 1));
+  return 0;
+}
+
+/* nes.isolate_sprite(slot) -- emit ONLY these slots this draw. Renders the
+ * entity through the normal path onto whatever surface the draw targets,
+ * rather than cutting its pixels out of the finished frame. */
+static int l_nes_isolate_sprite(lua_State *S) {
+  ensure_bound(S, &PROFS[AB_PROF_NES]);
+  ab_prof_nes_isolate_sprite((int)luaL_checkinteger(S, 1));
+  return 0;
+}
+
+static int l_nes_hide_cell(lua_State *S) {
+  ensure_bound(S, &PROFS[AB_PROF_NES]);
+  ab_prof_nes_hide_cell((int)luaL_checkinteger(S, 1),
+                        (int)luaL_checkinteger(S, 2));
+  return 0;
+}
+
 /* nes.sprite_bounds() -> x0,y0,x1,y1 of the currently matched metasprite, or
  * nil. Useful for bezels that want to draw their own overlay near a monster. */
 static int l_nes_sprite_bounds(lua_State *S) {
@@ -250,6 +281,9 @@ static const luaL_Reg NES_FUNCS[] = {
   { "clear_replacements",  l_nes_clear_replacements },
   { "draw",                l_nes_draw },
   { "sprite_bounds",       l_nes_sprite_bounds },
+  { "hide_cell",           l_nes_hide_cell },
+  { "hide_sprite",         l_nes_hide_sprite },
+  { "isolate_sprite",      l_nes_isolate_sprite },
   { NULL, NULL }
 };
 

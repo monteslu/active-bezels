@@ -101,10 +101,18 @@ void ab_nes_build_lut(const ab_nes_frame *f, int mask, uint32_t out_lut[256]) {
 /* Emit run-coalesced quads for one pixel plane. `pick` returns the palette
  * value to draw, or -1 to skip. Runs are long on real frames (flat colour
  * spans), which is what keeps the quad count far below the pixel count. */
+/* bg_select: which background pixels this pass emits.
+ *   AB_NES_BG_ALL    everything (the historical behaviour)
+ *   AB_NES_BG_EMPTY  only pixels where no tile pattern is drawn (backdrop)
+ *   AB_NES_BG_SOLID  only pixels belonging to an actual tile
+ * Splitting on the RESOLVED pattern index is what lets a bezel treat the
+ * level geometry separately from the sky behind it -- they are one batch to
+ * the PPU, which is exactly why a post-filter cannot tell them apart. */
 static int emit_plane(ab_batch *b, const ab_nes_frame *f, const ab_nes_view *v,
                       int frame_mask, const unsigned char *plane,
                       const unsigned char *bgpix, const unsigned char *bgval,
-                      const unsigned char *suppress, int sprite_rules) {
+                      const unsigned char *suppress, int sprite_rules,
+                      int bg_select) {
   if (!b || !f || !v || !plane) return 0;
   const int have_bgpix = bgpix != NULL;
 
@@ -134,7 +142,19 @@ static int emit_plane(ab_batch *b, const ab_nes_frame *f, const ab_nes_view *v,
                                   vrow ? vrow[x] : 0);
         if (draw && srow && srow[x]) draw = 0;   /* replaced by HD art */
       } else {
-        draw = 1;
+        /* Background: honour the same mask. This branch used to hardcode
+         * draw = 1, so a suppress mask handed to ab_nes_emit_background was
+         * accepted and then silently ignored -- the caller saw a normal
+         * result and every hidden cell rendered anyway. */
+        draw = (srow && srow[x]) ? 0 : 1;
+        if (draw && bg_select != AB_NES_BG_ALL) {
+          /* Pattern entry 0 = nothing drawn here = the backdrop shows. Use
+           * the resolved index when the core gives us one; bgval's bit 6 is
+           * only valid while the background is rendering. */
+          const int empty = prow ? ((prow[x] & 0x03) == 0)
+                                 : ((row[x] & 0x40) != 0);
+          draw = (bg_select == AB_NES_BG_EMPTY) ? empty : !empty;
+        }
       }
       if (!draw) { x++; continue; }
 
@@ -162,10 +182,26 @@ static int emit_plane(ab_batch *b, const ab_nes_frame *f, const ab_nes_view *v,
   return quads;
 }
 
+int ab_nes_emit_background_sel(ab_batch *b, const ab_nes_frame *f,
+                               const ab_nes_view *v, int frame_mask,
+                               const unsigned char *suppress, int bg_select) {
+  /* `suppress` (optional) is a per-pixel mask: non-zero means DO NOT EMIT.
+   * A bezel that wants to own a class of background tiles -- the HUD text
+   * being the standing example -- marks those pixels and the redraw simply
+   * never draws them, leaving a hole the bezel fills on its own terms.
+   * That is categorically different from drawing them and painting over the
+   * result: nothing has to line up afterwards, and the tiles never pass
+   * through whatever treatment the layer gets. */
+  return emit_plane(b, f, v, frame_mask, f ? f->bgval : NULL,
+                    (f && f->have_bgpix) ? f->bgpix : NULL, NULL,
+                    suppress, 0, bg_select);
+}
+
 int ab_nes_emit_background(ab_batch *b, const ab_nes_frame *f,
-                           const ab_nes_view *v, int frame_mask) {
-  return emit_plane(b, f, v, frame_mask, f ? f->bgval : NULL, NULL, NULL,
-                    NULL, 0);
+                           const ab_nes_view *v, int frame_mask,
+                           const unsigned char *suppress) {
+  return ab_nes_emit_background_sel(b, f, v, frame_mask, suppress,
+                                    AB_NES_BG_ALL);
 }
 
 int ab_nes_emit_sprites(ab_batch *b, const ab_nes_frame *f,
@@ -173,7 +209,8 @@ int ab_nes_emit_sprites(ab_batch *b, const ab_nes_frame *f,
                         const unsigned char *suppress) {
   if (!f) return 0;
   return emit_plane(b, f, v, frame_mask, f->sprdrawn,
-                    f->have_bgpix ? f->bgpix : NULL, f->bgval, suppress, 1);
+                    f->have_bgpix ? f->bgpix : NULL, f->bgval, suppress, 1,
+                    AB_NES_BG_ALL);
 }
 
 int ab_nes_mark_sprites(const ab_nes_frame *f, const ab_registry *reg,

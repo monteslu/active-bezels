@@ -221,14 +221,15 @@ static JSValue prof_clear(JSContext *ctx, const jsp_desc *d) {
 static int read_view(JSContext *ctx, int argc, JSValueConst *argv,
                      ab_prof_view *v, double def_scale, ab_prof_id prof) {
   v->x = 0; v->y = 0; v->scale = def_scale;
-  v->bg_surface = 0; v->spr_surface = 0;
+  v->bg_surface = 0; v->spr_surface = 0; v->solid_surface = 0;
   if (argc > 0) {
     v->x = jopt_num(ctx, argv[0], "x", 0);
     v->y = jopt_num(ctx, argv[0], "y", 0);
     v->scale = jopt_num(ctx, argv[0], "scale", def_scale);
     v->bg_surface  = jopt_int(ctx, argv[0], "bg_surface", 0);
     v->spr_surface = jopt_int(ctx, argv[0], "spr_surface", 0);
-    if ((v->bg_surface || v->spr_surface) &&
+    v->solid_surface = jopt_int(ctx, argv[0], "solid_surface", 0);
+    if ((v->bg_surface || v->spr_surface || v->solid_surface) &&
         !ab_prof_layers_supported(prof)) {
       JS_ThrowTypeError(ctx, "draw: bg_surface/spr_surface not supported on this profile "
       "(its layers are resolved per pixel by the core, so there is "

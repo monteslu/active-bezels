@@ -1167,10 +1167,16 @@ for (const spec of RUNTIMES) {
     });
     const frame = runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 1);
     assert.ok(frame.rgba.length > 0, 'a frame still composes');
-    const texts = runtime.compositor.commands
-      .filter((c) => c.kind === 'text').map((c) => String(c.text));
-    assert.ok(texts.some((s) => s.includes(spec.panel)),
-      `${spec.lang}: error panel expected, got: ${texts.join(' | ')}`);
+    /* Assert the CONTRACT (the failure is reported), not the drawing
+     * mechanism. The panel used to be built from `text` commands and now
+     * renders TrueType through `mesh`, so matching on command kind made
+     * this test a description of the implementation rather than of the
+     * promise. scriptError is the machine-readable channel a host actually
+     * reads, and it is what tooling depends on. */
+    assert.ok(runtime.scriptError(),
+      `${spec.lang}: a broken script must report scriptError`);
+    assert.ok(runtime.compositor.commands.length > 0,
+      `${spec.lang}: the panel must still draw something`);
   });
 
   test(`the ${spec.lang} runtime reports a runtime error from tick`, async (t) => {
@@ -1187,10 +1193,12 @@ for (const spec of RUNTIMES) {
     });
     runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 1);
     runtime.processFrame(new Uint8Array(4).fill(128), 1, 1, 2);
-    const texts = runtime.compositor.commands
-      .filter((c) => c.kind === 'text').map((c) => String(c.text));
-    assert.ok(texts.some((s) => s.includes('boom in tick')),
-      `${spec.lang}: the panel must carry the real message, got: ${texts.join(' | ')}`);
+    /* The message has to name the actual failure. Read it from the guest's
+     * exported error rather than from draw commands: the panel renders
+     * TrueType now, and a host reads this channel anyway. */
+    const reported = runtime.scriptError() ?? '';
+    assert.ok(reported.includes('boom in tick'),
+      `${spec.lang}: the error must carry the real message, got: ${reported}`);
   });
 
   test(`the ${spec.lang} scaffold runs as shipped`, async (t) => {

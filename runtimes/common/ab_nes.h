@@ -136,8 +136,22 @@ typedef struct {
 } ab_nes_view;
 
 /* Emit the background layer. Returns quads drawn. */
+/* Which background pixels an emit pass covers. The PPU draws the level
+ * geometry and the empty sky as ONE layer, so a filter over the finished
+ * picture can never treat them differently -- splitting here is the whole
+ * point of redrawing from machine state. */
+enum { AB_NES_BG_ALL = 0, AB_NES_BG_EMPTY = 1, AB_NES_BG_SOLID = 2 };
+
+/* As below, but emits only the selected class of background pixel. */
+int ab_nes_emit_background_sel(ab_batch *b, const ab_nes_frame *f,
+                               const ab_nes_view *v, int frame_mask,
+                               const unsigned char *suppress, int bg_select);
+
+/* `suppress` (may be NULL): per-pixel mask, non-zero = do not emit. Lets a
+ * guest carve specific background tiles OUT of the redraw entirely. */
 int ab_nes_emit_background(ab_batch *b, const ab_nes_frame *f,
-                           const ab_nes_view *v, int frame_mask);
+                           const ab_nes_view *v, int frame_mask,
+                           const unsigned char *suppress);
 
 /* Emit the sprite layer. `suppress` is an optional 256*240 byte mask; a
  * non-zero entry means "this pixel belongs to replacement art, skip it". */

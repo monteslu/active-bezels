@@ -27,6 +27,7 @@
 #include "../../sdk/active_bezel.h"
 
 #include "../common/ab_batteries.h"
+#include "../common/ab_panel.h"
 
 /* --- link stubs ----------------------------------------------------------
  * lbaselib's dofile/loadfile still reference luaL_loadfilex even though the
@@ -65,8 +66,28 @@ static void set_error(const char *message) {
   if (n >= sizeof(g_error)) n = sizeof(g_error) - 1;
   memcpy(g_error, message, n);
   g_error[n] = 0;
-  ab_log_raw(g_error, (int32_t)n);
+  /* Tag the log line. The on-screen panel is the only OTHER place this
+   * surfaces -- the host sees a successful tick, so status().error stays
+   * null for a script error -- and reading a blurry panel off a screenshot
+   * is a bad debugging loop. A fixed prefix makes it greppable:
+   *   grep 'AB-ERROR' <server log>
+   * Requires the host to be running with logging enabled (RETROEMU_DEBUG=1
+   * for romdev); without it ab_log is a no-op and this vanishes. */
+  char tagged[sizeof(g_error) + 16];
+  const char *pfx = "AB-ERROR: ";
+  size_t p = strlen(pfx);
+  memcpy(tagged, pfx, p);
+  memcpy(tagged + p, g_error, n);
+  ab_log_raw(tagged, (int32_t)(p + n));
 }
+
+/* Clear a latched error so a RELOADED script gets a fresh start.
+ *
+ * ab_tick returns early forever once g_error is set, so without this a
+ * fixed script keeps rendering the OLD message until the whole host is
+ * restarted -- which reads exactly like "my fix did nothing" and cost
+ * several wasted debug cycles. */
+static void clear_error(void) { g_error[0] = 0; }
 
 /* ------------------------------------------------------- Lua ab bindings -- */
 
@@ -160,11 +181,14 @@ static int l_surface_target(lua_State *S) {
   return 1;
 }
 static int l_surface_end(lua_State *S) { lua_pushinteger(S, ab_surface_end()); return 1; }
+/* ab.surface_filter(source, destination, shader [, mask_texture])
+ * `mask_texture` (optional) reaches the shader as `u_mask`. */
 static int l_surface_filter(lua_State *S) {
   size_t n = 0;
   const char *shader = luaL_checklstring(S, 3, &n);
+  const int32_t mask = (int32_t)luaL_optinteger(S, 4, 0);
   lua_pushinteger(S, ab_surface_filter_raw((int32_t)luaL_checkinteger(S, 1),
-    (int32_t)luaL_checkinteger(S, 2), shader, (int32_t)n));
+    (int32_t)luaL_checkinteger(S, 2), shader, (int32_t)n, mask));
   return 1;
 }
 
@@ -598,6 +622,9 @@ static const luaL_Reg AB_FUNCS[] = {
 /* -------------------------------------------------------- script loading -- */
 
 static int load_script(void) {
+  /* A reload is a fresh start: drop any latched error, or a script that has
+   * just been FIXED keeps rendering the previous failure. */
+  clear_error();
   static const char *CANDIDATES[] = { "main.lua", "assets/main.lua" };
   const char *name = NULL;
   int32_t size = -1;
@@ -762,11 +789,8 @@ int32_t ab_pre_frame(uint64_t frame) {
 AB_EXPORT("ab_tick")
 void ab_tick(uint64_t frame) {
   if (g_error[0] || !L || !g_has_tick) {
-    ab_clear(0x201018ffu);
-    ab_draw_game_fit(0, 0.5, 0.35, 0);
-    ab_text("lua bezel error:", 40, 40, 30, 0xff8080ffu);
-    ab_text(g_error[0] ? g_error : "script not loaded", 40, 84, 24, 0xffd0d0ffu);
-    ab_text("fix main.lua and repack -- the runtime reloads it", 40, 124, 22, 0x9098b0ffu);
+    ab_error_panel("lua", g_error[0] ? g_error : "script not loaded",
+                   "fix main.lua and reload -- the runtime re-reads it");
     return;
   }
   lua_getglobal(L, "tick");
@@ -791,6 +815,17 @@ void ab_event(int32_t kind, uint32_t data) {
     lua_pop(L, 1);
   }
 }
+
+/* The latched script error, for the HOST.
+ *
+ * Without this a script failure is visible only on the guest's own error
+ * panel: the host's tick call returns normally, so its status API reports
+ * no error and every programmatic check says the bezel is healthy while
+ * the screen shows a stack trace. Returns a pointer to a NUL-terminated
+ * string in guest memory (empty when there is no error); the host reads it
+ * through its usual memory window. */
+AB_EXPORT("ab_last_error")
+const char *ab_last_error(void) { return g_error; }
 
 AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {

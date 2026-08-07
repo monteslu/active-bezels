@@ -31,7 +31,7 @@ SRC=$(find micropython_embed -name '*.c' ! -name 'mphalport.c' | sort)
 # setjmp/longjmp (nlr), and the default JS-trampoline form cannot work under a
 # host that provides only the ab_host module. No LTO: it breaks wasm-sjlj.
 "$EMCC" runtime.c ab_profiles_py.c \
-  ../common/ab_batteries.c ../common/ab_render.c ../common/ab_profiles.c \
+  ../common/ab_batteries.c ../common/ab_panel.c ../common/ab_panel_font.c ../common/ab_render.c ../common/ab_profiles.c \
   ../common/ab_nes.c ../common/ab_gb.c ../common/ab_md.c ../common/ab_snes.c \
   ../common/ab_msx.c ../common/ab_pce.c \
   ../common/ab_wasi_stubs.c $SRC \

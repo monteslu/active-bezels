@@ -1,0 +1,14 @@
+The embedded error-panel font (runtimes/common/ab_panel_font.c) is an
+ASCII subset of DejaVu Sans Mono.
+
+DejaVu Fonts are released under a permissive licence derived from the
+Bitstream Vera Fonts Copyright, which allows redistribution, modification
+and bundling in other works.
+
+  Fonts are (c) Bitstream (see below). DejaVu changes are in public domain.
+  Glyphs imported from Arev fonts are (c) Tavmjong Bah (see below).
+
+Full text: https://dejavu-fonts.github.io/License.html
+
+It is embedded rather than loaded from package assets because the panel it
+draws exists precisely for when the package is broken.

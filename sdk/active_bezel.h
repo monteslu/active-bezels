@@ -194,11 +194,22 @@ static inline int32_t ab_quad(const ab_point *corners, int32_t handle, uint32_t 
 AB_IMPORT("ab_host", "surface_create") extern int32_t ab_surface_create(int32_t w, int32_t h);
 AB_IMPORT("ab_host", "surface_target") extern int32_t ab_surface_target(int32_t handle);
 AB_IMPORT("ab_host", "surface_end") extern int32_t ab_surface_end(void);
+/* `mask` (0 = none) binds a guest texture as the shader's `u_mask`, sampled
+ * NEAREST. This is how a filter keys off the MACHINE rather than off the
+ * colours it was handed: a per-cell tile-class map, a per-pixel sprite-slot
+ * map, anything the guest can read from live regions and the framebuffer
+ * cannot express. Without it a surface filter can only do what any
+ * post-processing filter already does. */
 AB_IMPORT("ab_host", "surface_filter")
 extern int32_t ab_surface_filter_raw(int32_t source, int32_t destination,
-                                     const char *shader, int32_t length);
+                                     const char *shader, int32_t length,
+                                     int32_t mask);
+static inline int32_t ab_surface_filter_mask(int32_t source, int32_t destination,
+                                             const char *shader, int32_t mask) {
+  return ab_surface_filter_raw(source, destination, shader, ab_strlen(shader), mask);
+}
 static inline int32_t ab_surface_filter(int32_t source, int32_t destination, const char *shader) {
-  return ab_surface_filter_raw(source, destination, shader, ab_strlen(shader));
+  return ab_surface_filter_raw(source, destination, shader, ab_strlen(shader), 0);
 }
 
 /* Run a multi-pass RetroArch `.glslp` preset from the package into a surface.

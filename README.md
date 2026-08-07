@@ -37,6 +37,22 @@ The core tick and the bezel tick are ordered on the same host frame. Nothing is
 asynchronous, so the visible frame and the state used to enhance it are
 deterministic.
 
+
+Two things a package can do that nothing downstream of the framebuffer can:
+
+**Take layers apart.** The redraw emits the empty backdrop, the solid tiles
+and the sprites as separate batches, and a draw can route each to its own
+surface. The PPU draws the level geometry and the open sky as one layer, so
+a filter over the finished picture sees them as the same pixels and must
+treat them identically -- which is exactly why post-processing reads as a
+wash laid over a game rather than as the game changing.
+
+**Take one entity out.** `hide_cell` / `hide_sprite` drop a background cell
+or an OAM slot from the render entirely, and `isolate_sprite` renders only
+the marked slots onto a surface of your choosing. Entities are identified by
+slot, which is live machine state: colour cannot do it (in Super Mario Bros.
+the player, the red koopa and the mushroom all share sprite palette 0).
+
 ## What this repository is
 
 The format specification, the reference runtime, and the packaging tool.
