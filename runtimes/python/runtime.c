@@ -36,6 +36,7 @@
 #include "py/objtype.h"
 
 #include "../common/ab_batteries.h"
+#include "../common/ab_panel.h"
 #include "../../sdk/active_bezel.h"
 
 /* The platform redraw profiles (`nes`/`gb`/`md`/`snes`/`msx`/`pce`).
@@ -63,13 +64,33 @@ static char g_error[512];
 static int g_booted = 0;               /* MicroPython initialised */
 static int g_has_tick = 0, g_has_event = 0, g_has_pre_frame = 0;
 
+/* One place that prefixes AB-ERROR, so every error path is greppable. */
+static void log_error_tagged(const char *msg, size_t n) {
+  char tagged[sizeof(g_error) + 16];
+  const char *pfx = "AB-ERROR: ";
+  size_t p = strlen(pfx);
+  if (n + p >= sizeof(tagged)) n = sizeof(tagged) - p - 1;
+  memcpy(tagged, pfx, p);
+  memcpy(tagged + p, msg, n);
+  ab_log_raw(tagged, (int32_t)(p + n));
+}
+
 static void set_error(const char *message) {
   size_t n = strlen(message);
   if (n >= sizeof(g_error)) n = sizeof(g_error) - 1;
   memcpy(g_error, message, n);
   g_error[n] = 0;
-  ab_log_raw(g_error, (int32_t)n);
+  /* Tag the log line so it is greppable: `grep AB-ERROR <server log>`.
+   * The on-screen panel is otherwise the only place a script error shows --
+   * the host sees a SUCCESSFUL tick, so status().error stays null -- and
+   * reading a panel off a screenshot is a bad debugging loop. */
+  log_error_tagged(g_error, n);
 }
+
+/* Clear a latched error so a RELOADED script gets a fresh start: the tick
+ * entry point returns early forever once g_error is set, so without this a
+ * FIXED script keeps rendering the old message until the host restarts. */
+static void clear_error(void) { g_error[0] = 0; }
 
 /* MicroPython reports failures by longjmp'ing to a nlr buffer; the exception
  * object carries the message. Render it into g_error so the panel can say
@@ -111,7 +132,10 @@ static void set_error_from_exception(mp_obj_t exc) {
       g_error[n] = 0;
     }
   }
-  ab_log_raw(g_error, (int32_t)n);
+  /* Log through the shared tagged path: this function fills g_error
+   * directly, so without this a Python error was the ONE case that never
+   * appeared under `grep AB-ERROR`. */
+  log_error_tagged(g_error, n);
   vstr_clear(&vstr);
 }
 
@@ -269,12 +293,16 @@ static MP_DEFINE_CONST_FUN_OBJ_1(ab_surface_target_obj, ab_surface_target_fn);
 static mp_obj_t ab_surface_end_fn(void) { return mp_obj_new_int(ab_surface_end()); }
 static MP_DEFINE_CONST_FUN_OBJ_0(ab_surface_end_obj, ab_surface_end_fn);
 
-static mp_obj_t ab_surface_filter_fn(mp_obj_t src, mp_obj_t dst, mp_obj_t shader) {
+/* ab.surface_filter(src, dst, shader[, mask]) -- mask reaches the shader as
+ * `u_mask`; 0/omitted binds nothing. */
+static mp_obj_t ab_surface_filter_fn(size_t n_args, const mp_obj_t *args) {
   size_t n = 0;
-  const char *s = arg_str(shader, &n);
-  return mp_obj_new_int(ab_surface_filter_raw(arg_i(src), arg_i(dst), s, (int32_t)n));
+  const char *s = arg_str(args[2], &n);
+  const int32_t mask = n_args > 3 ? arg_i(args[3]) : 0;
+  return mp_obj_new_int(ab_surface_filter_raw(arg_i(args[0]), arg_i(args[1]),
+                                              s, (int32_t)n, mask));
 }
-static MP_DEFINE_CONST_FUN_OBJ_3(ab_surface_filter_obj, ab_surface_filter_fn);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(ab_surface_filter_obj, 3, 4, ab_surface_filter_fn);
 
 static mp_obj_t ab_surface_preset_fn(mp_obj_t src, mp_obj_t dst, mp_obj_t preset) {
   size_t n = 0;
@@ -879,11 +907,8 @@ int32_t ab_pre_frame(uint64_t frame) {
 AB_EXPORT("ab_tick")
 void ab_tick(uint64_t frame) {
   if (g_error[0] || !g_booted || !g_has_tick) {
-    ab_clear(0x201018ffu);
-    ab_draw_game_fit(0, 0.5, 0.35, 0);
-    ab_text("python bezel error:", 40, 40, 30, 0xff8080ffu);
-    ab_text(g_error[0] ? g_error : "script not loaded", 40, 84, 24, 0xffd0d0ffu);
-    ab_text("fix main.py and reload -- the runtime re-reads it", 40, 124, 22, 0x9098b0ffu);
+    ab_error_panel("python", g_error[0] ? g_error : "script not loaded",
+                   "fix main.py and reload -- the runtime re-reads it");
     return;
   }
   call_script("tick", mp_obj_new_int_from_ull(frame), 1);
@@ -898,6 +923,17 @@ void ab_event(int32_t kind, uint32_t data) {
   if (!g_booted || !g_has_event || g_error[0]) return;
   call_script("event", mp_obj_new_int(kind), 1);
 }
+
+/* The latched script error, for the HOST.
+ *
+ * Without this a script failure is visible only on the guest's own error
+ * panel: the host's tick call returns normally, so its status API reports
+ * no error and every programmatic check says the bezel is healthy while
+ * the screen shows a stack trace. Returns a pointer to a NUL-terminated
+ * string in guest memory (empty when there is no error); the host reads it
+ * through its usual memory window. */
+AB_EXPORT("ab_last_error")
+const char *ab_last_error(void) { return g_error; }
 
 AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {

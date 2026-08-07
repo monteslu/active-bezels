@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- **Three-way layer routing on the NES/GB redraw.** `draw` takes
+  `bg_surface`, `solid_surface` and `spr_surface`; one draw -- one frame
+  read, one sprite evaluation -- emits the empty backdrop, the solid tiles
+  and the sprites onto three surfaces. The split is on the RESOLVED pattern
+  index, so it separates level geometry from open sky, which the PPU draws
+  as one layer and a post-processing filter therefore cannot tell apart.
+  That distinction is the difference between an effect that reads as the
+  world changing and one that reads as a wash laid over it.
+- **`hide_cell(cx, cy)` / `hide_sprite(slot)`** -- take an 8x8 background
+  cell or an OAM slot out of the render entirely. The pixels are never
+  emitted, so there is nothing to erase and nothing to paint over. This is
+  what a package needs to own a class of pixels (a HUD, a character) without
+  screen-scraping: an 8x8 cell contains whatever is BEHIND the entity, so
+  copying it out of the finished frame drags the background along and tears
+  a hole in the layer underneath.
+- **`isolate_sprite(slot)`** -- the inverse: emit ONLY the marked slots,
+  through the normal CHR + OAM + palette path, onto whatever surface the
+  draw targets. Gives one entity its own layer, properly rendered.
+  Identify entities by SLOT rather than colour: in SMB the player, the red
+  koopa and the mushroom share sprite palette 0 while the fire flower does
+  not, so a colour test exempts the wrong set.
+- **`surface_filter` takes an optional mask texture**, bound as `u_mask`
+  and sampled NEAREST, so a shader can key off structure the framebuffer
+  cannot express (a per-cell tile-class map, a per-pixel entity map).
+- **A readable error panel**, shared by all four runtimes. An embedded
+  TrueType face (DejaVu Sans Mono, ASCII-subset, 17 KB) on an opaque
+  backing across the top half of the frame, with the game still running
+  underneath. The font is compiled into the runtime because the panel exists
+  for when the PACKAGE is broken. Replaces a 3x5 bitmap that was close to
+  unreadable at 1080p.
+- **`ab_last_error` guest export**, surfaced as `runtime.status().scriptError`
+  (and `BEZEL_SCRIPT_ERROR` in romdev). Script errors are caught by the
+  guest runtime, so the host's tick returns NORMALLY -- the existing `error`
+  field stays null and every automated health check passes while the screen
+  shows a stack trace. This is the channel tooling needs.
+- **Full parameter reference in all four runtime READMEs** -- every call
+  with its arguments, generated from one canonical table so the four cannot
+  drift apart.
+
+### Fixed
+
+- **`surface_filter` ran before the draws it was meant to filter.** Draw
+  commands are queued and executed at frame end, but the filter ran its GL
+  immediately -- so it filtered the PREVIOUS frame, or an empty surface on
+  frame 1. Now queued and run in command order; compile errors still report
+  synchronously as the return value.
+- **`surface_filter` into the same surface did nothing.** In-place filtering
+  bound one texture as both sampler source and FBO attachment, which GL
+  leaves undefined. Now ping-pongs through a cached scratch surface and is
+  orientation-neutral: an identity shader no longer flips the picture.
+- **Surfaces did not survive a context migration.** `init()` reset the
+  surface map, so opening a playtest window (which rebinds GL onto the
+  window) invalidated every handle a guest was holding: `surface_target`
+  bound nothing and `surface_filter` returned 0, with no error anywhere. A
+  layered bezel went dead the moment a window opened while looking correct
+  in headless captures.
+- **`surface_target` cleared unconditionally**, so a guest could not
+  re-enter a surface within a frame -- the second target wiped what the
+  first pass drew. Surfaces now clear once per frame, on first target.
+- **A surface drawn with `draw_texture` came out upside down** (FBO rows are
+  bottom-up; uploaded textures are top-down).
+- **The background emit ignored its suppress mask.** `emit_plane` hardcoded
+  `draw = 1` for the background path, so a mask handed to
+  `ab_nes_emit_background` was accepted and silently discarded.
+- **Hide/isolate marks were never consumed.** An isolate list survived the
+  draw and suppressed every sprite in every later draw -- enemies and items
+  silently stopped rendering. The two lists are now consumed independently:
+  clearing both together instead wiped `hide_cell` marks a later draw in the
+  same frame still needed, which double-drew suppressed HUD text.
+- **`TEXTURE1` was missing from the GL constant table**, so binding a second
+  sampler passed `undefined` to `glActiveTexture` and surfaced as an opaque
+  guest trap.
+- **Python logged one class of error untagged.** `set_error_from_exception`
+  filled the error buffer directly and bypassed the tagged log path, so a
+  Python script error was the one case invisible to `grep AB-ERROR` even
+  though the API reported it.
+
+
 ## 0.7.0
 
 ### Added

@@ -205,3 +205,150 @@ Two build settings are load-bearing, both learned from a failure:
 The gem set is deliberately lean (no `mruby-onig-regexp`, no `mruby-json`): a
 bezel draws from emulator memory rather than parsing text, and dropping Onigmo
 alone saves several hundred KB.
+
+## Function reference
+
+Every call, with its parameters. `[x]` is optional. Colours are packed
+`0xRRGGBBAA`; geometry is in logical units on the 1920x1080 canvas.
+
+
+### draw
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.clear` | `rgba` | Fill the whole target. |
+| `AB.fill_rect` | `x, y, w, h, rgba` | Axis-aligned rect. |
+| `AB.triangle` | `x1, y1, x2, y2, x3, y3, rgba` |  |
+| `AB.mesh` | `verts[, texture]` | verts: {x,y[,u,v][,rgba]}. texture may be ab.GAME. |
+| `AB.text` | `str, x, y, size, rgba` | Built-in 3x5 debug font. Use draw_text for UI. |
+| `AB.scissor` | `x, y, w, h` | Clip subsequent draws. |
+| `AB.scissor_reset` | — |  |
+
+### the game
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.draw_game` | `x, y, w, h[, sampling]` | sampling: ab.SAMPLE.NEAREST|LINEAR. |
+| `AB.draw_game_fit` | `[mode[, alignX[, alignY[, sampling]]]]` | mode: ab.FIT.* |
+| `AB.game_width` | — | -> px |
+| `AB.game_height` | — | -> px |
+| `AB.game_pixel` | `x, y` | -> 0xRRGGBBAA of the live frame; 0 outside. |
+
+### transform
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.push_transform` | — |  |
+| `AB.pop_transform` | — |  |
+| `AB.reset_transform` | — |  |
+| `AB.translate` | `x, y` |  |
+| `AB.scale` | `x, y` |  |
+| `AB.rotate` | `radians` |  |
+| `AB.skew` | `x, y` |  |
+| `AB.transform2d` | `a, b, c, d, e, f` | Full 2x3 matrix. |
+
+### textures
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.texture_create` | `rgba_bytes, w, h` | -> handle. Needs w*h*4 bytes. |
+| `AB.texture_destroy` | `handle` |  |
+| `AB.draw_texture` | `handle, x, y, w, h` | handle may be a SURFACE. |
+| `AB.draw_texture_rect` | `handle, x, y, w, h, sx, sy, sw, sh` | Source sub-rect: atlases. |
+| `AB.image` | `asset_name` | -> {texture, width, height} (decoded PNG/JPG/GIF/BMP). |
+| `AB.image_data` | `asset_name` | -> raw decoded pixels + dimensions. |
+
+### text
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.font` | `asset_name` | -> font handle (TrueType). |
+| `AB.draw_text` | `font, str, x, y, size, rgba` | Anti-aliased. NOT `print`. |
+| `AB.measure` | `font, str, size` | -> width in logical units. |
+| `AB.font_metrics` | `font, size` | -> ascent, descent, line height. |
+
+### perspective
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.quad` | `corners, texture` | corners: 4x {x,y} TL,TR,BR,BL. Perspective-correct. |
+
+### surfaces
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.surface_create` | `w, h` | -> handle. Shares the 1920x1080 LOGICAL canvas: geometry is projected against it whatever the pixel size. |
+| `AB.surface_target` | `handle` | Redirect draws into it. Does NOT nest -- an end closes the innermost open surface. |
+| `AB.surface_end` | — | Clears ONCE per surface per frame, on first target; re-entry accumulates. |
+| `AB.surface_filter` | `source, destination, shader[, mask_texture]` | GLSL ES 3.00 fragment shader. source/destination may be equal (in-place). mask_texture arrives as `u_mask`, sampled NEAREST. |
+| `AB.surface_preset` | `source, destination, preset_name` | Multi-pass .glslp chain. |
+
+### shaders
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.effect_set` | `shader_source` | -> false when there is no GPU backend. |
+| `AB.effect_clear` | — |  |
+
+### memory
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.region` | `name` | -> index or nil. Re-resolve after a machine jump. |
+| `AB.region_find_id` | `id` | -> index or nil. |
+| `AB.region_size` | `index` | -> bytes |
+| `AB.region_flags` | `index` | -> bit flags (read/write/snapshot). |
+| `AB.region_offset` | `index` | -> host offset |
+| `AB.region_count` | — |  |
+| `AB.region_generation` | — | Bumps on reset/state load. |
+| `AB.read_u8` | `index, offset` |  |
+| `AB.read_u16` | `index, offset[, big_endian]` |  |
+| `AB.read_u24` | `index, offset[, big_endian]` |  |
+| `AB.read_u32` | `index, offset[, big_endian]` |  |
+| `AB.read` | `index, offset, length` | -> bulk bytes. ONE crossing instead of N. |
+| `AB.write_u8` | `index, offset, value` | -> 0 on a snapshot region (refuses). |
+
+### host
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `AB.logical_width` | — | 1920 |
+| `AB.logical_height` | — | 1080 |
+| `AB.physical_width` | — |  |
+| `AB.physical_height` | — |  |
+| `AB.elapsed_ms` | — | Since the first tick. |
+| `AB.delta_ms` | — | Clamped to 250. |
+| `AB.input` | `port, device, index, id` | PHYSICAL pad, always. |
+| `AB.input_override` | `port, device, index, id, value` | pre_frame ONLY. id 256 = whole joypad mask. |
+| `AB.log` | `message` |  |
+| `AB.asset` | `name` | -> bytes or nil. |
+| `AB.config_bool` | `key, default` |  |
+| `AB.config_number` | `key, default` |  |
+| `AB.config_string` | `key, default` |  |
+| `AB.rgb` | `r, g, b[, a]` | -> packed 0xRRGGBBAA. |
+
+### redraw profiles
+
+On `NES` and the other platform globals.
+
+| call | parameters | notes |
+| --- | --- | --- |
+| `NES.bind` | — | -> true, or nil + reason. Call in init(). |
+| `NES.draw` | `{x=, y=, scale=[, bg_surface=][, solid_surface=][, spr_surface=]}` | -> {bg_quads, spr_quads, hd_drawn, sprites_replaced}. The three surfaces route the emitted batches apart: backdrop, solid tiles, sprites. |
+| `NES.hide_cell` | `cx, cy` | Do not draw this 8x8 BACKGROUND cell. Consumed by each draw. |
+| `NES.hide_sprite` | `slot` | Do not draw this OAM slot. |
+| `NES.isolate_sprite` | `slot` | Draw ONLY the marked slots this pass. Wins over hide_sprite. |
+| `NES.replace_sprite` | `{tiles=, image=[, anchor_exclude=][, base_w=][, base_h=][, ring=]}` | -> rule id. |
+| `NES.remove_replacement` | `id` |  |
+| `NES.clear_replacements` | — |  |
+| `NES.sprite_bounds` | — | -> x0,y0,x1,y1 of the matched metasprite, or nil. |
+
+### Script errors
+
+A script error is caught by the runtime, drawn on an on-screen panel, and
+logged with an `AB-ERROR:` prefix. It is ALSO exported to the host through
+`ab_last_error`, which is what makes it visible to tooling: the host's tick
+call returns normally for this class of failure, so a host-side `error`
+field stays null while the screen shows a stack trace. In romdev it surfaces
+as `BEZEL_SCRIPT_ERROR` in the bezel status. A reload clears the latch, so a
+fixed script recovers without restarting the host.

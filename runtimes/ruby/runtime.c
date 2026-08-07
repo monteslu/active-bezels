@@ -33,6 +33,7 @@
 #include "../../sdk/active_bezel.h"
 
 #include "../common/ab_batteries.h"
+#include "../common/ab_panel.h"
 
 /* The platform redraw profiles (`NES`/`GB`/`MD`/`SNES`/`MSX`/`PCE`).
  * All logic lives in runtimes/common/ab_profiles.c, shared with the other
@@ -51,8 +52,22 @@ static void set_error(const char *message) {
   if (n >= sizeof(g_error)) n = sizeof(g_error) - 1;
   memcpy(g_error, message, n);
   g_error[n] = 0;
-  ab_log_raw(g_error, (int32_t)n);
+  /* Tag the log line so it is greppable: `grep AB-ERROR <server log>`.
+   * The on-screen panel is otherwise the only place a script error shows --
+   * the host sees a SUCCESSFUL tick, so status().error stays null -- and
+   * reading a panel off a screenshot is a bad debugging loop. */
+  char tagged[sizeof(g_error) + 16];
+  const char *pfx = "AB-ERROR: ";
+  size_t p = strlen(pfx);
+  memcpy(tagged, pfx, p);
+  memcpy(tagged + p, g_error, n);
+  ab_log_raw(tagged, (int32_t)(p + n));
 }
+
+/* Clear a latched error so a RELOADED script gets a fresh start: the tick
+ * entry point returns early forever once g_error is set, so without this a
+ * FIXED script keeps rendering the old message until the host restarts. */
+static void clear_error(void) { g_error[0] = 0; }
 
 /* Drain a pending mruby exception into the error panel. mruby signals errors
  * by leaving mrb->exc set rather than by return value, so EVERY entry point
@@ -246,10 +261,12 @@ static mrb_value ab_m_surface_filter(mrb_state *m, mrb_value self) {
   mrb_int src, dst;
   const char *shader;
   mrb_int len;
-  mrb_get_args(m, "iis", &src, &dst, &shader, &len);
+  mrb_int mask = 0;
+  mrb_get_args(m, "iis|i", &src, &dst, &shader, &len, &mask);
   (void)self;
   return mrb_int_value(m, ab_surface_filter_raw((int32_t)src, (int32_t)dst,
-                                                shader, (int32_t)len));
+                                                shader, (int32_t)len,
+                                                (int32_t)mask));
 }
 
 static mrb_value ab_m_surface_preset(mrb_state *m, mrb_value self) {
@@ -898,11 +915,8 @@ int32_t ab_pre_frame(uint64_t frame) {
 AB_EXPORT("ab_tick")
 void ab_tick(uint64_t frame) {
   if (g_error[0] || !mrb || !g_has_tick) {
-    ab_clear(0x201018ffu);
-    ab_draw_game_fit(0, 0.5, 0.35, 0);
-    ab_text("ruby bezel error:", 40, 40, 30, 0xff8080ffu);
-    ab_text(g_error[0] ? g_error : "script not loaded", 40, 84, 24, 0xffd0d0ffu);
-    ab_text("fix main.rb and repack -- the runtime reloads it", 40, 124, 22, 0x9098b0ffu);
+    ab_error_panel("ruby", g_error[0] ? g_error : "script not loaded",
+                   "fix main.rb and reload -- the runtime re-reads it");
     return;
   }
   /* Arena save/restore around every tick: each mrb_funcall and every value a
@@ -926,6 +940,17 @@ void ab_event(int32_t kind, uint32_t data) {
   guard("event()");
   mrb_gc_arena_restore(mrb, ai);
 }
+
+/* The latched script error, for the HOST.
+ *
+ * Without this a script failure is visible only on the guest's own error
+ * panel: the host's tick call returns normally, so its status API reports
+ * no error and every programmatic check says the bezel is healthy while
+ * the screen shows a stack trace. Returns a pointer to a NUL-terminated
+ * string in guest memory (empty when there is no error); the host reads it
+ * through its usual memory window. */
+AB_EXPORT("ab_last_error")
+const char *ab_last_error(void) { return g_error; }
 
 AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {

@@ -43,6 +43,28 @@ static int32_t region_any(const char *a, const char *b, const char *c) {
   return r;
 }
 
+/* --- layer routing -------------------------------------------------------
+ *
+ * A redraw emits its layers as separate batches; ab_prof_view's bg_surface
+ * and spr_surface route them to separate offscreen surfaces so a bezel can
+ * shade each differently (see the header for why this is not a script-side
+ * concern). Handle 0 means "leave the target alone", which is the default
+ * and reproduces the old single-destination behaviour exactly.
+ *
+ * layer_end() must run on EVERY path out of a draw, including the error
+ * ones: leaving the guest's subsequent draws pointed at an offscreen
+ * surface blanks the visible scene, and the guest has no way to tell that
+ * happened. */
+static int layer_begin(int32_t surface) {
+  if (!surface) return 0;
+  ab_surface_target(surface);
+  return 1;
+}
+
+static void layer_end(int active) {
+  if (active) ab_surface_end();
+}
+
 /* Substitution bookkeeping, identical across the five sprite profiles:
  * a kit registry plus the replacement art table parallel to rule ids. */
 typedef struct {
@@ -83,6 +105,13 @@ int ab_prof_remove_rule(ab_prof_id p, int id) {
     }
   }
   return removed;
+}
+
+int ab_prof_layers_supported(ab_prof_id p) {
+  /* See the header. NES and GB emit background and sprites as separate
+   * batches; MD/MSX/PCE resolve their layers per pixel before we ever see
+   * them, so there is nothing to route apart. */
+  return p == AB_PROF_NES || p == AB_PROF_GB;
 }
 
 void ab_prof_clear_rules(ab_prof_id p) {
@@ -171,6 +200,55 @@ static int nes_sprite_height(void) {
   return 8;
 }
 
+/* Per-pixel "do not draw" mask for the BACKGROUND layer, filled by
+ * ab_prof_nes_hide_cell. This is how a bezel takes ownership of a class of
+ * background tiles: the redraw never emits them at all, so there is nothing
+ * to paint over afterwards and the tiles never receive the layer's
+ * treatment. The HUD text is the motivating case -- text that has been
+ * warped and hue-rotated and then patched back over is a hack; text that
+ * was never drawn in the first place is correct. */
+static unsigned char G_nes_hide[AB_NES_W * AB_NES_LINES];
+static int G_nes_hide_any = 0;
+
+void ab_prof_nes_hide_cell(int cx, int cy) {
+  if (cx < 0 || cy < 0) return;
+  const int x0 = cx * 8, y0 = cy * 8 + AB_NES_OVERSCAN_TOP;
+  if (x0 + 8 > AB_NES_W || y0 + 8 > AB_NES_LINES) return;
+  for (int y = y0; y < y0 + 8; y++)
+    memset(G_nes_hide + (size_t)y * AB_NES_W + x0, 1, 8);
+  G_nes_hide_any = 1;
+}
+
+/* Per-slot sprite suppression -- see the header. Marked into the same
+ * per-pixel mask the HD-substitution path already uses, so the emit needs
+ * no new branch. */
+static int G_nes_hide_slot[64];
+static int G_nes_hide_slot_any = 0;
+
+static int G_nes_iso_slot[64];
+static int G_nes_iso_any = 0;
+
+void ab_prof_nes_isolate_sprite(int slot) {
+  if (slot < 0 || slot >= 64) return;
+  G_nes_iso_slot[slot] = 1;
+  G_nes_iso_any = 1;
+}
+
+void ab_prof_nes_hide_sprite(int slot) {
+  if (slot < 0 || slot >= 64) return;
+  G_nes_hide_slot[slot] = 1;
+  G_nes_hide_slot_any = 1;
+}
+
+void ab_prof_nes_clear_hidden(void) {
+  if (G_nes_hide_any) memset(G_nes_hide, 0, sizeof(G_nes_hide));
+  G_nes_hide_any = 0;
+  if (G_nes_hide_slot_any) memset(G_nes_hide_slot, 0, sizeof(G_nes_hide_slot));
+  G_nes_hide_slot_any = 0;
+  if (G_nes_iso_any) memset(G_nes_iso_slot, 0, sizeof(G_nes_iso_slot));
+  G_nes_iso_any = 0;
+}
+
 int ab_prof_nes_draw(const ab_prof_view *v, ab_prof_nes_result *r,
                      const char **err) {
   ab_nes_view view;
@@ -198,19 +276,108 @@ int ab_prof_nes_draw(const ab_prof_view *v, ab_prof_nes_result *r,
                                  G_nes.suppress, &rule, &bounds);
   }
 
-  /* Background, then sprites. Each layer is ONE mesh command. */
-  ab_batch_reset(G_nes.batch);
-  const int bg_quads = ab_nes_emit_background(G_nes.batch, &G_nes.frame,
-                                              &view, frame_mask);
-  ab_batch_flush(G_nes.batch, 0);
+  /* Background, then sprites. Each layer is ONE mesh command, optionally
+   * routed to its own surface (v->bg_surface / v->spr_surface). */
+  const unsigned char *hide = G_nes_hide_any ? G_nes_hide : NULL;
+  int bg_quads;
+  int layer;
+  if (v->solid_surface) {
+    /* Split: backdrop to bg_surface, solid tiles to solid_surface. Two
+     * emits over the same decoded frame -- no extra region reads, no second
+     * sprite evaluation. */
+    layer = layer_begin(v->bg_surface);
+    ab_batch_reset(G_nes.batch);
+    bg_quads = ab_nes_emit_background_sel(G_nes.batch, &G_nes.frame, &view,
+                                          frame_mask, hide, AB_NES_BG_EMPTY);
+    ab_batch_flush(G_nes.batch, 0);
+    layer_end(layer);
 
+    layer = layer_begin(v->solid_surface);
+    ab_batch_reset(G_nes.batch);
+    bg_quads += ab_nes_emit_background_sel(G_nes.batch, &G_nes.frame, &view,
+                                           frame_mask, hide, AB_NES_BG_SOLID);
+    ab_batch_flush(G_nes.batch, 0);
+    layer_end(layer);
+  } else {
+    layer = layer_begin(v->bg_surface);
+    ab_batch_reset(G_nes.batch);
+    bg_quads = ab_nes_emit_background(G_nes.batch, &G_nes.frame, &view,
+                                      frame_mask, hide);
+    ab_batch_flush(G_nes.batch, 0);
+    layer_end(layer);
+  }
+
+  /* Fold slot suppression into the same per-pixel mask the HD substitution
+   * path uses. If no substitution ran, the buffer has not been cleared this
+   * frame, so clear it here before marking. */
+  int use_suppress = marked;
+  if (G_nes_iso_any) {
+    /* Emit ONLY the isolated slots: suppress every sprite pixel, then clear
+     * the mask back over the pixels those slots cover. */
+    memset(G_nes.suppress, 1, (size_t)AB_NES_W * AB_NES_LINES);
+    const int sh = nes_sprite_height();
+    for (int slot = 0; slot < 64; slot++) {
+      if (!G_nes_iso_slot[slot]) continue;
+      const int oy = ab_region_read_u8(G_nes.regions.oam, slot * 4);
+      const int ox = ab_region_read_u8(G_nes.regions.oam, slot * 4 + 3);
+      if (oy >= 0xEF) continue;
+      for (int yy = oy + 1; yy < oy + 1 + sh; yy++) {
+        if (yy < 0 || yy >= AB_NES_LINES) continue;
+        for (int xx = ox; xx < ox + 8; xx++) {
+          if (xx < 0 || xx >= AB_NES_W) continue;
+          G_nes.suppress[(size_t)yy * AB_NES_W + xx] = 0;
+        }
+      }
+    }
+    use_suppress = 1;
+  } else if (G_nes_hide_slot_any) {
+    /* Always clear before marking.
+     *
+     * This used to clear only `if (!marked)`, on the assumption that the
+     * substitution pass was the only other writer. It is not: an
+     * isolate_sprite draw fills this same buffer with 1s, and a guest that
+     * does an isolate pass and then a normal draw in the same frame (draw
+     * the player alone, then draw the world) left those 1s standing -- so
+     * the second draw suppressed EVERY sprite. On SMB that showed up as the
+     * goombas silently never rendering while the player looked fine. */
+    memset(G_nes.suppress, 0, (size_t)AB_NES_W * AB_NES_LINES);
+    /* The clear also drops whatever mark_sprites wrote for HD substitution
+     * earlier in this draw, so redo it -- the two features have to compose,
+     * not cancel. */
+    if (marked) {
+      const ab_sub_rule *r2 = NULL;
+      ab_nes_bounds b2;
+      memset(&b2, 0, sizeof(b2));
+      ab_nes_mark_sprites(&G_nes.frame, G_nes.sub.registry,
+                          nes_sprite_height(), G_nes.suppress, &r2, &b2);
+    }
+    const int sprite_h2 = nes_sprite_height();
+    for (int slot = 0; slot < 64; slot++) {
+      if (!G_nes_hide_slot[slot]) continue;
+      const int oy = ab_region_read_u8(G_nes.regions.oam, slot * 4);
+      const int ox = ab_region_read_u8(G_nes.regions.oam, slot * 4 + 3);
+      if (oy >= 0xEF) continue;
+      for (int yy = oy + 1; yy < oy + 1 + sprite_h2; yy++) {
+        if (yy < 0 || yy >= AB_NES_LINES) continue;
+        for (int xx = ox; xx < ox + 8; xx++) {
+          if (xx < 0 || xx >= AB_NES_W) continue;
+          G_nes.suppress[(size_t)yy * AB_NES_W + xx] = 1;
+        }
+      }
+    }
+    use_suppress = 1;
+  }
+
+  layer = layer_begin(v->spr_surface);
   ab_batch_reset(G_nes.batch);
   const int spr_quads = ab_nes_emit_sprites(G_nes.batch, &G_nes.frame, &view,
                                             frame_mask,
-                                            marked ? G_nes.suppress : NULL);
+                                            use_suppress ? G_nes.suppress : NULL);
   ab_batch_flush(G_nes.batch, 0);
 
-  /* Replacement art, anchored to the live metasprite bounds. */
+  /* Replacement art, anchored to the live metasprite bounds. This is still
+   * inside the SPRITE layer: substituted art replaces sprites, so it must
+   * land wherever the sprites went or it would be shaded as background. */
   int hd_drawn = 0;
   if (marked && rule && bounds.x1 > bounds.x0) {
     int32_t tex; int tw, th;
@@ -232,11 +399,28 @@ int ab_prof_nes_draw(const ab_prof_view *v, ab_prof_nes_result *r,
       hd_drawn = 1;
     }
   }
+  layer_end(layer);
 
   r->bg_quads = bg_quads;
   r->spr_quads = spr_quads;
   r->hd_drawn = hd_drawn;
   r->sprites_replaced = marked;
+  /* Consume only what THIS draw actually used.
+   *
+   * Both directions of getting this wrong are real bugs already seen:
+   *  - Clearing nothing left an isolate list standing, so every later draw
+   *    emitted only those slots -- "most sprites stopped rendering".
+   *  - Clearing everything wiped the hide_cell marks that a LATER draw in
+   *    the same frame still needed, so suppressed background text rendered
+   *    twice (once warped in the world layer, once clean on top).
+   * A guest that does an isolate pass and then a normal pass in one frame
+   * sets the two independently, so they are consumed independently. */
+  if (G_nes_iso_any) {
+    memset(G_nes_iso_slot, 0, sizeof(G_nes_iso_slot));
+    G_nes_iso_any = 0;
+  } else {
+    ab_prof_nes_clear_hidden();
+  }
   return 1;
 }
 
@@ -341,17 +525,22 @@ int ab_prof_gb_draw(const ab_prof_view *v, ab_prof_gb_result *r,
                                 G_gb.suppress, &rule, &bounds);
   }
 
-  /* Background, then sprites. Each layer is ONE mesh command. */
+  /* Background, then sprites. Each layer is ONE mesh command, optionally
+   * routed to its own surface (v->bg_surface / v->spr_surface). */
+  int layer = layer_begin(v->bg_surface);
   ab_batch_reset(G_gb.batch);
   const int bg_quads = ab_gb_emit_background(G_gb.batch, &G_gb.frame, &view);
   ab_batch_flush(G_gb.batch, 0);
+  layer_end(layer);
 
+  layer = layer_begin(v->spr_surface);
   ab_batch_reset(G_gb.batch);
   const int spr_quads = ab_gb_emit_sprites(G_gb.batch, &G_gb.frame, &view,
                                            marked ? G_gb.suppress : NULL);
   ab_batch_flush(G_gb.batch, 0);
 
-  /* Replacement art, anchored to the live metasprite bounds. */
+  /* Replacement art, anchored to the live metasprite bounds. Still inside
+   * the SPRITE layer: substituted art replaces sprites. */
   int hd_drawn = 0;
   if (marked && rule && bounds.x1 > bounds.x0) {
     int32_t tex; int tw, th;
@@ -374,6 +563,7 @@ int ab_prof_gb_draw(const ab_prof_view *v, ab_prof_gb_result *r,
       hd_drawn = 1;
     }
   }
+  layer_end(layer);
 
   r->bg_quads = bg_quads;
   r->spr_quads = spr_quads;
@@ -482,6 +672,15 @@ int ab_prof_md_draw(const ab_prof_view *v, ab_prof_md_result *r,
                                 G_md.suppress, &rule, &bounds);
   }
 
+  /* NO layer split here, deliberately. Unlike NES/GB -- which emit a
+   * background batch and a sprite batch this code could route apart -- the
+   * MD path consumes gpgx's RESOLVED per-pixel planes: priority, shadow and
+   * highlight are already applied per pixel, so "the sprite layer" is not a
+   * separable batch to redirect. Honouring bg_surface here would have to
+   * re-render from scratch and would still not reproduce the core's
+   * per-pixel priority resolution. ab_prof_md_layers_supported() reports
+   * this so a binding can refuse the option loudly instead of ignoring it. */
+  int layer = layer_begin(v->bg_surface ? v->bg_surface : v->spr_surface);
   ab_batch_reset(G_md.batch);
   const int quads = ab_md_emit(G_md.batch, &G_md.frame, &view,
                                marked ? G_md.suppress : NULL);
@@ -506,6 +705,7 @@ int ab_prof_md_draw(const ab_prof_view *v, ab_prof_md_result *r,
       hd_drawn = 1;
     }
   }
+  layer_end(layer);
 
   r->quads = quads;
   r->hd_drawn = hd_drawn;
@@ -886,6 +1086,11 @@ int ab_prof_pce_bind(const char **err) {
 
 void ab_prof_pce_view_init(ab_prof_pce_view *v) {
   v->v.x = 0; v->v.y = 0; v->v.scale = 4.0;
+  /* PCE resolves its layers per pixel like MD, so it has no separable
+   * sprite batch to route; ab_prof_layers_supported() says so and the
+   * bindings refuse the option. Zero them anyway -- an uninitialised
+   * handle here would target a random surface. */
+  v->v.bg_surface = 0; v->v.spr_surface = 0; v->v.solid_surface = 0;
   v->height = 224;
   v->force_bg = -1;
   v->force_sprites = -1;

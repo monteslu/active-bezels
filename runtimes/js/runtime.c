@@ -29,6 +29,7 @@
 #include "../../sdk/active_bezel.h"
 
 #include "../common/ab_batteries.h"
+#include "../common/ab_panel.h"
 
 /* The platform redraw profiles (`nes`/`gb`/`md`/`snes`/`msx`/`pce`).
  * All logic lives in runtimes/common/ab_profiles.c, shared with the other
@@ -48,8 +49,22 @@ static void set_error(const char *message) {
   if (n >= sizeof(g_error)) n = sizeof(g_error) - 1;
   memcpy(g_error, message, n);
   g_error[n] = 0;
-  ab_log_raw(g_error, (int32_t)n);
+  /* Tag the log line so it is greppable: `grep AB-ERROR <server log>`.
+   * The on-screen panel is otherwise the only place a script error shows --
+   * the host sees a SUCCESSFUL tick, so status().error stays null -- and
+   * reading a panel off a screenshot is a bad debugging loop. */
+  char tagged[sizeof(g_error) + 16];
+  const char *pfx = "AB-ERROR: ";
+  size_t p = strlen(pfx);
+  memcpy(tagged, pfx, p);
+  memcpy(tagged + p, g_error, n);
+  ab_log_raw(tagged, (int32_t)(p + n));
 }
+
+/* Clear a latched error so a RELOADED script gets a fresh start: the tick
+ * entry point returns early forever once g_error is set, so without this a
+ * FIXED script keeps rendering the old message until the host restarts. */
+static void clear_error(void) { g_error[0] = 0; }
 
 /* Turn a pending JS exception into the error panel's message. QuickJS keeps
  * the stack on the exception object, and the first stack line is what makes a
@@ -244,7 +259,8 @@ AB_FN(js_surface_filter) {
   shader = JS_ToCStringLen(ctx, &len, argv[2]);
   if (!shader) return JS_EXCEPTION;
   result = ab_surface_filter_raw((int32_t)arg_num(ctx, argv[0], 0),
-                                 (int32_t)arg_num(ctx, argv[1], 0), shader, (int32_t)len);
+                                 (int32_t)arg_num(ctx, argv[1], 0), shader, (int32_t)len,
+                                 argc > 3 ? (int32_t)arg_num(ctx, argv[3], 0) : 0);
   JS_FreeCString(ctx, shader);
   return JS_NewInt32(ctx, result);
 }
@@ -1065,11 +1081,8 @@ int32_t ab_pre_frame(uint64_t frame) {
 AB_EXPORT("ab_tick")
 void ab_tick(uint64_t frame) {
   if (g_error[0] || !g_ctx || !g_has_tick) {
-    ab_clear(0x201018ffu);
-    ab_draw_game_fit(0, 0.5, 0.35, 0);
-    ab_text("js bezel error:", 40, 40, 30, 0xff8080ffu);
-    ab_text(g_error[0] ? g_error : "script not loaded", 40, 84, 24, 0xffd0d0ffu);
-    ab_text("fix main.js and repack -- the runtime reloads it", 40, 124, 22, 0x9098b0ffu);
+    ab_error_panel("js", g_error[0] ? g_error : "script not loaded",
+                   "fix main.js and reload -- the runtime re-reads it");
     return;
   }
   /* double, not int64: a JS number is a double anyway, and the emulator's
@@ -1086,6 +1099,17 @@ void ab_event(int32_t kind, uint32_t data) {
   if (!g_ctx || !g_has_event || g_error[0]) return;
   call_hook("event", (double)kind);
 }
+
+/* The latched script error, for the HOST.
+ *
+ * Without this a script failure is visible only on the guest's own error
+ * panel: the host's tick call returns normally, so its status API reports
+ * no error and every programmatic check says the bezel is healthy while
+ * the screen shows a stack trace. Returns a pointer to a NUL-terminated
+ * string in guest memory (empty when there is no error); the host reads it
+ * through its usual memory window. */
+AB_EXPORT("ab_last_error")
+const char *ab_last_error(void) { return g_error; }
 
 AB_EXPORT("ab_shutdown")
 void ab_shutdown(void) {

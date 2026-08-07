@@ -64,7 +64,7 @@ int main(void){
   ab_batch *b = ab_batch_new(1024);
 
   /* FLAT background: 224 rows x 1 run = 224 quads, NOT 57344 pixels. */
-  int q = ab_nes_emit_background(b,&f,&view,0x18);
+  int q = ab_nes_emit_background(b,&f,&view,0x18,NULL);
   CHECK(q==AB_NES_H, "flat bg coalesces to one quad per row");
   int before=g_mesh_calls;
   ab_batch_flush(b,0);
@@ -160,7 +160,7 @@ int main(void){
   for(int x=0;x<256;x++) g_regions[R_BGVAL][50*256+x] = (unsigned char)(x&1?0x0F:0x20);
   ab_nes_frame_read(&reg,&f);
   ab_batch_reset(b);
-  q = ab_nes_emit_background(b,&f,&view,0x18);
+  q = ab_nes_emit_background(b,&f,&view,0x18,NULL);
   CHECK(q == (AB_NES_H-1) + 256, "223 flat rows + one 256-quad alternating row");
   printf("  [info] flat frame=%d quads, one alternating row=%d quads (57344 px)\n", AB_NES_H, q);
 

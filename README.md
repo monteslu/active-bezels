@@ -37,6 +37,22 @@ The core tick and the bezel tick are ordered on the same host frame. Nothing is
 asynchronous, so the visible frame and the state used to enhance it are
 deterministic.
 
+
+Two things a package can do that nothing downstream of the framebuffer can:
+
+**Take layers apart.** The redraw emits the empty backdrop, the solid tiles
+and the sprites as separate batches, and a draw can route each to its own
+surface. The PPU draws the level geometry and the open sky as one layer, so
+a filter over the finished picture sees them as the same pixels and must
+treat them identically -- which is exactly why post-processing reads as a
+wash laid over a game rather than as the game changing.
+
+**Take one entity out.** `hide_cell` / `hide_sprite` drop a background cell
+or an OAM slot from the render entirely, and `isolate_sprite` renders only
+the marked slots onto a surface of your choosing. Entities are identified by
+slot, which is live machine state: colour cannot do it (in Super Mario Bros.
+the player, the red koopa and the mushroom all share sprite palette 0).
+
 ## What this repository is
 
 The format specification, the reference runtime, and the packaging tool.
@@ -90,10 +106,10 @@ next to a script and you have a bezel:
 
 | Runtime | Language | Size | Script | Docs |
 |---|---|---|---|---|
-| `runtimes/lua/` | Lua 5.4 | 397 KB | `main.lua` | [Lua bezels](runtimes/lua/README.md) |
-| `runtimes/python/` | MicroPython | 287 KB | `main.py` | [Python bezels](runtimes/python/README.md) |
-| `runtimes/js/` | QuickJS (ES2023) | 579 KB | `main.js` | [JavaScript bezels](runtimes/js/README.md) |
-| `runtimes/ruby/` | mruby 3.4 | 620 KB | `main.rb` | [Ruby bezels](runtimes/ruby/README.md) |
+| `runtimes/lua/` | Lua 5.4 | 418 KB | `main.lua` | [Lua bezels](runtimes/lua/README.md) |
+| `runtimes/python/` | MicroPython | 306 KB | `main.py` | [Python bezels](runtimes/python/README.md) |
+| `runtimes/js/` | QuickJS (ES2023) | 598 KB | `main.js` | [JavaScript bezels](runtimes/js/README.md) |
+| `runtimes/ruby/` | mruby 3.4 | 640 KB | `main.rb` | [Ruby bezels](runtimes/ruby/README.md) |
 
 Each links to its own README: quick start, the full API by area, and the
 shapes that differ in that language. [Overview of all
@@ -191,6 +207,34 @@ runtimes take 55 of the 58 available.
 The four prebuilt runtimes above are themselves just wasm guests built this way,
 from C. They exist because most bezels are not worth a compile step, not because
 scripting is the supported path and compiling is not.
+
+
+## When a bezel breaks
+
+A script error never takes the session down, and it is never silent. It is
+reported three ways:
+
+- **On screen** -- a panel across the top half of the frame in an embedded
+  TrueType face, on an opaque backing, with the game still running
+  underneath so the failure stays in context. The font is compiled into the
+  runtime: the panel exists for when the *package* is broken, so it cannot
+  depend on the package shipping one.
+- **On stderr**, prefixed `AB-ERROR:`, with no debug flag required.
+  Ordinary `ab.log` output stays behind `RETROEMU_DEBUG` / `AB_LOG` -- a
+  crash is not ordinary logging. `AB_SILENT=1` suppresses it if your host
+  surfaces the error itself.
+- **Programmatically**, as `runtime.status().scriptError`.
+
+That third channel is the one that matters for tooling, and it is worth
+understanding why it exists. A script error is caught by its own runtime, so
+the host's `processFrame` call returns **normally** -- the host-side `error`
+field stays null and every automated health check passes while the screen
+shows a stack trace. Anything that decides "is this bezel working?"
+programmatically has to read `scriptError`, not `error`. romdev surfaces it
+as `BEZEL_SCRIPT_ERROR`.
+
+Reloading clears the latch, so a fixed script recovers without restarting
+the host.
 
 ## Dependencies
 

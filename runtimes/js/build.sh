@@ -79,7 +79,7 @@ done
 # provides only the ab_host module. (Same lesson as the Lua runtime and every
 # wasmcart interpreter.) No LTO: it breaks the wasm-sjlj path.
 $EMCC runtime.c ab_profiles_js.c \
-  ../common/ab_batteries.c ../common/ab_render.c ../common/ab_profiles.c \
+  ../common/ab_batteries.c ../common/ab_panel.c ../common/ab_panel_font.c ../common/ab_render.c ../common/ab_profiles.c \
   ../common/ab_nes.c ../common/ab_gb.c ../common/ab_md.c ../common/ab_snes.c \
   ../common/ab_msx.c ../common/ab_pce.c \
   ../common/ab_wasi_stubs.c $QJS_OBJS \

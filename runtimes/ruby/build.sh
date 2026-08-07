@@ -39,7 +39,7 @@ fi
 # mrb_get_args/mrb_funcall/mrb_int_value and the calls corrupt their arguments
 # at runtime. (Found by a build whose every binding read garbage.)
 "$EMCC" runtime.c ab_profiles_rb.c \
-  ../common/ab_batteries.c ../common/ab_render.c ../common/ab_profiles.c \
+  ../common/ab_batteries.c ../common/ab_panel.c ../common/ab_panel_font.c ../common/ab_render.c ../common/ab_profiles.c \
   ../common/ab_nes.c ../common/ab_gb.c ../common/ab_md.c ../common/ab_snes.c \
   ../common/ab_msx.c ../common/ab_pce.c \
   ../common/ab_wasi_stubs.c "$MRUBY_LIB" \

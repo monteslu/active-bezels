@@ -450,3 +450,57 @@ if /tmp/ab_pce_ctrl22_test >/dev/null 2>&1; then
   exit 1
 fi
 echo "control failed as required: the mid-row palette split is actually tested."
+
+echo
+echo "== layer routing =="
+LAYER_SRC="ab_render.c ab_nes.c ab_gb.c ab_md.c ab_msx.c ab_pce.c ab_snes.c ab_profiles.c"
+# Separate translation units: the per-platform renderers have colliding
+# file-scope statics (each defines its own emit_plane), so unlike the
+# single-platform tests above these cannot be #included into one file.
+$CC -std=c99 -w -O2 -I. -o /tmp/ab_layers_test tests/test_ab_layers.c $LAYER_SRC
+/tmp/ab_layers_test
+
+echo
+echo "== control 23: sprite layer routed to the BACKGROUND surface (must FAIL) =="
+# The classic way to get this wrong: open one bracket and emit both batches
+# into it, so bg and sprites land on the same surface. Every pixel is still
+# drawn and every quad count is still right -- only the ROUTING is wrong,
+# which is exactly what the ordering assertions exist to catch.
+mkdir -p /tmp/ab_layers_ctrl23
+cp ab_render.h ab_nes.h ab_gb.h ab_md.h ab_msx.h ab_pce.h ab_snes.h \
+   ab_profiles.h /tmp/ab_layers_ctrl23/
+sed 's|  layer = layer_begin(v->spr_surface);|  layer = layer_begin(v->bg_surface);|' \
+  ab_profiles.c > /tmp/ab_layers_ctrl23/ab_profiles.c
+$CC -std=c99 -w -O2 -I/tmp/ab_layers_ctrl23 -I. \
+   -o /tmp/ab_layers_ctrl23_test tests/test_ab_layers.c \
+   /tmp/ab_layers_ctrl23/ab_profiles.c \
+   ab_render.c ab_nes.c ab_gb.c ab_md.c ab_msx.c ab_pce.c ab_snes.c 2>/dev/null
+if /tmp/ab_layers_ctrl23_test >/dev/null 2>&1; then
+  echo "CONTROL PASSED -- the suite cannot detect sprites routed to the wrong surface. FIX THE TESTS."
+  exit 1
+fi
+echo "control failed as required: layer routing is actually tested."
+
+echo
+echo "== control 24: target not restored after a split draw (must FAIL) =="
+# Leaving the guest pointed at an offscreen surface blanks the visible
+# scene, and the guest cannot tell. Assert the suite notices.
+mkdir -p /tmp/ab_layers_ctrl24
+cp ab_render.h ab_nes.h ab_gb.h ab_md.h ab_msx.h ab_pce.h ab_snes.h \
+   ab_profiles.h /tmp/ab_layers_ctrl24/
+# Multi-line match, so perl -0 rather than sed: drop the surface_end call
+# and leave the guest's draws pointed at the last offscreen surface.
+cp ab_profiles.c /tmp/ab_layers_ctrl24/ab_profiles.c
+perl -0pi -e 's/static void layer_end\(int active\) \{\n  if \(active\) ab_surface_end\(\);\n\}/static void layer_end(int active) {\n  (void)active;\n}/' \
+  /tmp/ab_layers_ctrl24/ab_profiles.c
+grep -q '(void)active;' /tmp/ab_layers_ctrl24/ab_profiles.c || {
+  echo "control 24 did not apply its edit -- the control is vacuous. FIX IT."; exit 1; }
+$CC -std=c99 -w -O2 -I/tmp/ab_layers_ctrl24 -I. \
+   -o /tmp/ab_layers_ctrl24_test tests/test_ab_layers.c \
+   /tmp/ab_layers_ctrl24/ab_profiles.c \
+   ab_render.c ab_nes.c ab_gb.c ab_md.c ab_msx.c ab_pce.c ab_snes.c 2>/dev/null
+if /tmp/ab_layers_ctrl24_test >/dev/null 2>&1; then
+  echo "CONTROL PASSED -- the suite cannot detect an unrestored render target. FIX THE TESTS."
+  exit 1
+fi
+echo "control failed as required: target restoration is actually tested."

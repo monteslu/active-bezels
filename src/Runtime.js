@@ -257,13 +257,16 @@ export class ActiveBezelRuntime {
         surface_create: (w, h) => this.compositor.surfaceCreate(w, h),
         surface_target: (handle) => this.compositor.surfaceTarget(handle),
         surface_end: () => this.compositor.surfaceEnd(),
-        surface_filter: (source, destination, ptr, length) => {
+        surface_filter: (source, destination, ptr, length, maskTexture = 0) => {
           const src = readGuestString(this, ptr, length);
           if (!src) return 0;
           /* The GPU path needs the live frame in case source is GAME_TEXTURE;
-           * the CPU path ignores the extras and reports failure. */
+           * the CPU path ignores the extras and reports failure.
+           * `maskTexture` (optional, 0 = none) binds a guest texture as
+           * `u_mask` so a shader can key off structure the framebuffer
+           * cannot express -- see the compositor for why that matters. */
           return this.compositor.surfaceFilter(source, destination, src,
-            this._gamePixels, this._gameWidth, this._gameHeight);
+            this._gamePixels, this._gameWidth, this._gameHeight, maskTexture);
         },
         /*
          * Run a multi-pass `.glslp` preset from the package into a surface.
@@ -351,7 +354,27 @@ export class ActiveBezelRuntime {
           return (((px[i] << 24) | (px[i + 1] << 16) | (px[i + 2] << 8) | px[i + 3]) >>> 0) | 0;
         },
         log: (ptr, length) => {
-          if (process.env.RETROEMU_DEBUG) console.error(`[active-bezel] ${readGuestString(this, ptr, length)}`);
+          const message = readGuestString(this, ptr, length);
+          /* A script ERROR is always audible; ordinary ab.log chatter is not.
+           *
+           * Guest runtimes prefix a crash with AB-ERROR (see set_error in
+           * each runtime's runtime.c). Gating that behind a debug env var means
+           * a bezel run outside a debug-enabled host reports its crash ONLY
+           * on the on-screen panel -- so an embedder with no window, or
+           * anyone not already suspicious, sees a silently wrong picture and
+           * a healthy-looking API. The trace is what a developer needs at
+           * the exact moment they have no other signal, so it goes to
+           * stderr unconditionally.
+           *
+           * Set AB_SILENT=1 to suppress even this (a host that surfaces
+           * scriptError in its own UI and does not want the duplicate). */
+          if (message.startsWith('AB-ERROR')) {
+            if (!process.env.AB_SILENT) console.error(`[active-bezel] ${message}`);
+            return;
+          }
+          if (process.env.RETROEMU_DEBUG || process.env.AB_LOG) {
+            console.error(`[active-bezel] ${message}`);
+          }
         },
       },
       ab_core: {},
@@ -451,6 +474,23 @@ export class ActiveBezelRuntime {
     } finally {
       this._inPreRender = false;
     }
+  }
+
+  /* Read the guest's latched script error, or null. Guests that predate
+   * the ab_last_error export simply do not have it, so this is optional. */
+  scriptError() {
+    try {
+      const fn = this.instance?.exports?.ab_last_error;
+      const memory = this.instance?.exports?.memory;
+      if (typeof fn !== 'function' || !memory) return null;
+      const ptr = Number(fn());
+      if (!ptr) return null;
+      const bytes = new Uint8Array(memory.buffer, ptr);
+      let end = 0;
+      while (end < bytes.length && bytes[end] !== 0 && end < 4096) end++;
+      if (!end) return null;
+      return new TextDecoder().decode(bytes.subarray(0, end));
+    } catch { return null; }
   }
 
   processFrame(gameRgba, gameWidth, gameHeight, frameNumber) {
@@ -648,6 +688,14 @@ export class ActiveBezelRuntime {
         averageComposeMs: this.stats.ticks ? this.stats.totalComposeMs / this.stats.ticks : 0,
       },
       error: this.error?.message ?? null,
+      /* The GUEST's own latched error, distinct from a host-side trap.
+       * A script that fails inside tick() is caught by its runtime and
+       * drawn on an error panel; the host's call returns normally, so
+       * `error` above stays null and every programmatic health check
+       * passes while the screen shows a stack trace. Surfacing it here is
+       * what makes "is this bezel actually working?" answerable without
+       * looking at a screenshot. */
+      scriptError: this.scriptError(),
     };
   }
 

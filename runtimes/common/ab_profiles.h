@@ -33,9 +33,43 @@
 
 /* ------------------------------------------------------------- shared -- */
 
-/* One view shape covers nes/gb/md; msx and pce extend it below. */
+/* One view shape covers nes/gb/md; msx and pce extend it below.
+ *
+ * LAYER SPLIT (bg_surface / spr_surface). A redraw already emits the
+ * background and the sprites as separate batches; these route those
+ * batches to separate offscreen surfaces in ONE pass, so a bezel can shade
+ * the world and the actors differently -- a melting background under sharp
+ * hue-shifted sprites, HD art on its own layer, a blurred playfield behind
+ * a crisp HUD. A shader over the composited frame cannot do any of that:
+ * there, Mario and the bricks behind him are the same pixels.
+ *
+ * 0 (the default) means "draw to wherever the guest already pointed us",
+ * i.e. the existing single-destination behaviour, byte for byte.
+ *
+ * Why this lives here and not in the script: doing it from Lua means TWO
+ * draw calls with layer toggles, which re-reads the frame and re-runs
+ * sprite evaluation for what is one machine state. The core already has
+ * the frame decoded and the substitution decided, so routing the two
+ * batches it is about to emit anyway costs one host call per layer. It is
+ * also the only way all four languages get identical pixels: the split
+ * happens below the bindings, which stay marshaling-only.
+ *
+ * The surfaces are the CALLER's -- created, filtered, composited and
+ * destroyed by the guest. The core targets them and restores the previous
+ * target before returning, including on every error path: a profile that
+ * left the guest's draws pointed at an offscreen surface would silently
+ * blank the scene. */
 typedef struct {
   double x, y, scale;
+  int32_t bg_surface;    /* 0 = current target */
+  int32_t spr_surface;   /* 0 = current target */
+  /* THIRD LAYER (NES). The PPU draws the level geometry and the empty sky
+   * as one background batch, so treating them together is exactly what
+   * makes an effect read as a global filter -- the bricks get whatever the
+   * sky gets. Set this and the background splits on the RESOLVED pattern
+   * index: solid tile pixels go here, backdrop pixels stay on bg_surface.
+   * 0 keeps the historical single-background behaviour. */
+  int32_t solid_surface;
 } ab_prof_view;
 
 /* Substitution management is identical across the five sprite profiles.
@@ -56,6 +90,16 @@ int  ab_prof_add_rule(ab_prof_id p, const ab_sub_rule *rule);  /* id or 0 */
 int  ab_prof_remove_rule(ab_prof_id p, int id);                /* 1 / 0 */
 void ab_prof_clear_rules(ab_prof_id p);
 
+/* Does this profile emit background and sprites as SEPARATE batches, i.e.
+ * can bg_surface/spr_surface actually route them apart? NES and GB can; MD
+ * cannot, because gpgx hands us resolved per-pixel planes with priority,
+ * shadow and highlight already applied, so there is no separable sprite
+ * batch to redirect. Bindings query this and REFUSE the option on profiles
+ * that would otherwise ignore it -- a silently-dropped layer request looks
+ * exactly like a working one until you notice both surfaces hold the same
+ * complete picture. */
+int  ab_prof_layers_supported(ab_prof_id p);
+
 /* ---------------------------------------------------------------- NES -- */
 
 typedef struct {
@@ -63,6 +107,40 @@ typedef struct {
 } ab_prof_nes_result;
 
 int  ab_prof_nes_bind(const char **err);
+/* Mark an 8x8 CELL of the background as not-to-be-drawn for the next
+ * draw. Cell coords are in the core's visible frame (32x28 cells for
+ * NES). The mask is consumed and cleared by each draw, so a guest
+ * re-marks every frame -- a stale mask silently hiding tiles would be
+ * far worse than the cost of re-marking. */
+void ab_prof_nes_hide_cell(int cx, int cy);
+/* Suppress an OAM SLOT from the sprite pass. The slot's pixels are simply
+ * not emitted, so a guest can take an entity out of the normal render and
+ * draw it itself -- the same "never drawn, so nothing to erase" contract
+ * hide_cell gives background tiles.
+ *
+ * By SLOT, because that is the only thing that identifies an ENTITY. Colour
+ * cannot: in SMB the player, the red koopa and the mushroom all share
+ * sprite palette 0, so a palette test pulls out three entities and misses
+ * the fire flower, which looks arbitrary on screen.
+ *
+ * Cleared by every draw, so a guest re-marks each frame. */
+void ab_prof_nes_hide_sprite(int slot);
+
+/* The INVERSE: emit ONLY the marked slots on the next draw, and nothing
+ * else in the sprite layer.
+ *
+ * This is what lets a guest give one entity its own surface without
+ * screen-scraping it. Copying the entity's OAM cells out of the finished
+ * frame looks equivalent and is not: a cell contains whatever is BEHIND the
+ * sprite, so the copy drags the hill or the bricks along with it and tears
+ * a rectangle out of the layer underneath. Rendering the slot through the
+ * normal path reconstructs it from CHR + OAM + palette, with the same
+ * transparency and priority rules as any other sprite.
+ *
+ * Mutually exclusive with hide_sprite: setting both is a contradiction, and
+ * the isolate list wins. Cleared by every draw. */
+void ab_prof_nes_isolate_sprite(int slot);
+void ab_prof_nes_clear_hidden(void);
 int  ab_prof_nes_draw(const ab_prof_view *v, ab_prof_nes_result *r,
                       const char **err);
 int  ab_prof_nes_sprite_bounds(int out[4]);        /* 1 = box valid */

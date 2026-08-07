@@ -41,6 +41,19 @@ int ab_bat_image_from_asset(const char *name, int name_len,
  */
 int32_t ab_bat_font_load(const char *name, int name_len, const char **out_err);
 
+/* Load a font from BYTES the caller already holds, rather than from a
+ * package asset.
+ *
+ * This exists for the runtimes' built-in error panel. That panel is what a
+ * developer reads when the package is broken, so it cannot depend on the
+ * package shipping a font -- and the 3x5 debug bitmap it used instead is
+ * close to unreadable at 1080p, which is the worst possible property for
+ * the one surface that only ever appears when something has gone wrong.
+ * The bytes are NOT copied; they must outlive the font (a static array
+ * does). */
+int32_t ab_bat_font_load_bytes(const unsigned char *bytes, int len,
+                               const char **out_err);
+
 /* Draw `text` at (x, y) baseline in `px`, tinted `rgba`. Returns the pen X
  * after the last glyph, so callers can chain or right-align. */
 double ab_bat_font_print(int32_t font, const char *text, int len,
