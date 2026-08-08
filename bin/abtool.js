@@ -18,12 +18,25 @@ function crc32(bytes) {
 function u16(n) { const b = Buffer.alloc(2); b.writeUInt16LE(n); return b; }
 function u32(n) { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b; }
 
+/* Files that never belong inside a package:
+ *   *.ab            — a previous build sitting in the source dir. Packing the
+ *                     dir it lives in nests archive inside archive (found as
+ *                     a 10MB "0.1.1" holding a 0.1.0 holding nothing wrong).
+ *   screenshot.png  — repo/gallery preview, not runtime data the guest reads.
+ *   dotfiles        — .git, .gitignore, .DS_Store and friends. */
+function excluded(name) {
+  const base = name.split('/').pop();
+  return name.endsWith('.ab') || base === 'screenshot.png' || base.startsWith('.');
+}
+
 async function collect(root, dir = root, out = []) {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
     if (entry.isSymbolicLink()) throw new Error(`symlink not allowed: ${entry.name}`);
     const full = path.join(dir, entry.name);
+    const rel = path.relative(root, full).split(path.sep).join('/');
+    if (excluded(rel)) continue;
     if (entry.isDirectory()) await collect(root, full, out);
-    else out.push({ name: path.relative(root, full).split(path.sep).join('/'), data: await fs.readFile(full) });
+    else out.push({ name: rel, data: await fs.readFile(full) });
   }
   return out;
 }
