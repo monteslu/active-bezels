@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.4
+
+- **A gpu-command-v1 guest with no working GPU is now an ERROR, not a CPU
+  fallback.** The machines this runs on always have a GPU; when GPU
+  compositor init fails the GL stack is broken, and quietly composing on
+  the CPU (~14ms/frame at 1080p) hides the breakage until someone wonders
+  why the game is slow -- which is exactly how a dead native-gles
+  window-attach went unnoticed. CPU compositing remains available as the
+  caller's explicit choice (`allowGpu: false`); it is never a silent
+  degradation. cpu-rgba-v1 guests are unaffected (CPU is their declared
+  renderer).
+
 ## 0.9.0
 
 ### Changed

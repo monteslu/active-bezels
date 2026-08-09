@@ -65,10 +65,22 @@ export class ActiveBezelRuntime {
       outputWidth: internal[0],
       outputHeight: internal[1],
     };
-    this.compositor = allowGpu && pkg.manifest.runtime.renderer === 'gpu-command-v1'
-      ? (ActiveBezelGpuCompositor.create(compositorOptions)
-        ?? new ActiveBezelCompositor(compositorOptions))
-      : new ActiveBezelCompositor(compositorOptions);
+    if (allowGpu && pkg.manifest.runtime.renderer === 'gpu-command-v1') {
+      /* No CPU fallback for a GPU guest: the machines this runs on always
+       * have a GPU, so a failed GPU init means the GL stack is BROKEN and
+       * quietly composing on the CPU (~14ms/frame at 1080p) just hides it
+       * until someone wonders why the game is slow. CPU compositing is the
+       * caller's explicit choice via allowGpu:false, never a degradation. */
+      this.compositor = ActiveBezelGpuCompositor.create(compositorOptions);
+      if (!this.compositor) {
+        throw new Error(
+          'gpu-command-v1 bezel: GPU compositor init failed and CPU compositing '
+          + 'is not a fallback. Fix the GL stack (native-gles createContext), or '
+          + 'pass allowGpu:false to explicitly choose CPU compositing.');
+      }
+    } else {
+      this.compositor = new ActiveBezelCompositor(compositorOptions);
+    }
     this.match = matchActiveBezel(pkg.manifest, this.romBytes, platform, { force });
     this.enabled = false;
     this.error = null;
