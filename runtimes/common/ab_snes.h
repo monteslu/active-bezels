@@ -38,6 +38,7 @@ int ab_snes_depth_runs(const uint8_t *depth_row, int width,
 
 /* RGB565 -> RGBA8888 widen, the host's exact rule, one row. */
 void ab_snes_565_row(const uint8_t *src, uint8_t *dst, int px);
+void ab_snes_565_row_keyed(const uint8_t *src, uint8_t *dst, int px);
 
 /* CGRAM (BGR555) -> 256x1 RGBA palette. */
 void ab_snes_palette(const uint8_t *cgram, uint8_t *rgba256);

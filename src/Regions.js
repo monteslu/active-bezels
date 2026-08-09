@@ -92,6 +92,10 @@ export const CORE_REGIONS = [
   [0x1B3, 'snes_m7lines'],
   [0x1B4, 'snes_linedepth'],
   [0x1B5, 'snes_cliplines'],
+  // Layer planes: the displayed frame split world/obj by the core's depth
+  // buffer at capture time (snes9x 0.10.1 patch); snes.draw layer routing.
+  [0x1B6, 'snes_lp_world'],
+  [0x1B7, 'snes_lp_obj'],
   [0x130, 'sms_vram'], [0x131, 'sms_cram'], [0x132, 'sms_vdp_regs'],
   [0x133, 'sms_z80_regs'], [0x134, 'gg_vram'], [0x135, 'gg_cram'],
   [0x140, 'gb_vram'], [0x141, 'gb_oam'], [0x142, 'gb_io'], [0x143, 'gb_hram'],

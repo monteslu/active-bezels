@@ -670,19 +670,29 @@ static int l_snes_tick(lua_State *S) {
   }
 }
 
-/* snes.draw{ x=, y=, scale= } -- FAITHFUL reconstruction from the capture,
- * no Mode 7 re-projection, no substitution. Returns { w=, h=, quads= }. */
+/* snes.draw{ x=, y=, scale=, bg_surface=, spr_surface= } -- FAITHFUL
+ * reconstruction from the capture. With surfaces given, the frame arrives
+ * as TWO planes split by the core's depth buffer: world (no OBJ pixels)
+ * to bg_surface, sprites to spr_surface -- HDMA/color-math stay baked in,
+ * and compositing world-then-obj reproduces the frame exactly. Returns
+ * { w=, h=, quads= }. */
 static int l_snes_draw(lua_State *S) {
   snes_ensure_bound(S);
   double ox = 0, oy = 0, scale = 1;
+  int32_t bg_surface = 0, spr_surface = 0;
   if (lua_istable(S, 1)) {
     lua_getfield(S, 1, "x"); ox = luaL_optnumber(S, -1, 0); lua_pop(S, 1);
     lua_getfield(S, 1, "y"); oy = luaL_optnumber(S, -1, 0); lua_pop(S, 1);
     lua_getfield(S, 1, "scale"); scale = luaL_optnumber(S, -1, 1); lua_pop(S, 1);
+    lua_getfield(S, 1, "bg_surface"); bg_surface = (int32_t)luaL_optinteger(S, -1, 0); lua_pop(S, 1);
+    lua_getfield(S, 1, "spr_surface"); spr_surface = (int32_t)luaL_optinteger(S, -1, 0); lua_pop(S, 1);
   }
   ab_prof_snes_draw_result r;
   const char *err = NULL;
-  if (!ab_prof_snes_draw(ox, oy, scale, &r, &err)) {
+  int ok = (bg_surface || spr_surface)
+    ? ab_prof_snes_draw_layers(ox, oy, scale, bg_surface, spr_surface, &r, &err)
+    : ab_prof_snes_draw(ox, oy, scale, &r, &err);
+  if (!ok) {
     if (err) return luaL_error(S, "%s", err);
     lua_pushnil(S);
     return 1;

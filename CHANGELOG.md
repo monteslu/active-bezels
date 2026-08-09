@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.10.0
+
+- **`snes.draw` learns the layer split** -- `snes.draw{bg_surface=,
+  spr_surface=}` routes the frame as TWO planes: world (every non-OBJ
+  pixel) and sprites (every OBJ pixel, alpha = true coverage), split by
+  the CORE's own depth buffer at capture time (snes9x 0.11.0 planes
+  `snes_lp_world`/`snes_lp_obj`; older cores get a loud error). Nothing
+  is re-rendered, so HDMA gradients, color math and windows stay baked
+  in, and compositing world-then-sprites reproduces the frame exactly:
+  the world plane's sprite-shaped holes sit under the obj pixels by
+  construction. The same layered-shading architecture the NES/GB
+  profiles have, now on SNES -- a smw bezel runs smb-acid's exact
+  structure (world melts, actors counter-rotate, the player passes
+  through untouched).
+- Orientation rule, now paid for twice and documented: FBO surfaces are
+  bottom-up; uploaded textures are top-down. A mesh sampling a SURFACE
+  needs v flipped, and a u_mask uploaded via texture_create must be
+  built bottom-up to register with surface_filter's v_uv.
+
 ## 0.9.4
 
 - **A gpu-command-v1 guest with no working GPU is now an ERROR, not a CPU

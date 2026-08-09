@@ -1268,6 +1268,7 @@ static ab_prof_common *prof_state(ab_prof_id p) {
 static struct {
   int bound;
   int32_t r_lpx, r_lstate, r_finfo, r_m7, r_depth, r_clip, r_vram, r_cgram;
+  int32_t r_lp_world, r_lp_obj;    /* layer planes; -1 on older cores */
 
   /* per-tick capture buffers */
   uint8_t fi[8];
@@ -1299,6 +1300,8 @@ static struct {
 
   /* GPU handles */
   int32_t tex_lpx, tex_pal, tex_plane, tex_ov_rgba, tex_ov_idx;
+  int32_t tex_world, tex_obj;
+  uint8_t *plane_buf;              /* scratch for the two layer planes */
   /* Textures whose draws are still QUEUED. The host flushes queued draws
    * at compose time, after the guest tick returns, so a texture destroyed
    * in the same tick that drew it is gone before the flush reads it --
@@ -1333,6 +1336,10 @@ int ab_prof_snes_bind(const char **err) {
   G_snes.r_m7     = ab_region_find("snes_m7lines");
   G_snes.r_depth  = ab_region_find("snes_linedepth");
   G_snes.r_clip   = ab_region_find("snes_cliplines");
+  /* OPTIONAL layer planes (core 0.10.1+): missing is fine for every
+   * existing consumer; only draw_layers requires them. */
+  G_snes.r_lp_world = ab_region_find("snes_lp_world");
+  G_snes.r_lp_obj   = ab_region_find("snes_lp_obj");
   G_snes.r_vram   = ab_region_find("video_ram");
   G_snes.r_cgram  = ab_region_find("snes_cgram");
   if (G_snes.r_lpx < 0 || G_snes.r_lstate < 0 || G_snes.r_finfo < 0 ||
@@ -1727,6 +1734,57 @@ int ab_prof_snes_draw(double ox, double oy, double scale,
   return 1;
 }
 
+int ab_prof_snes_draw_layers(double ox, double oy, double scale,
+                             int32_t bg_surface, int32_t spr_surface,
+                             ab_prof_snes_draw_result *r, const char **err) {
+  *err = NULL;
+  snes_retire_pending();
+  if (G_snes.r_lp_world < 0 || G_snes.r_lp_obj < 0) {
+    *err = "snes: this core does not expose the layer planes "
+           "(snes_lp_world/snes_lp_obj -- rebuild snes9x with the current "
+           "romdev patch)";
+    return 0;
+  }
+  ab_region_read(G_snes.r_finfo, 0, G_snes.fi, 8);
+  int width = G_snes.fi[0] | (G_snes.fi[1] << 8);
+  int lines = G_snes.fi[2] | (G_snes.fi[3] << 8);
+  if (width == 0 || lines == 0 || width > 512) return 0;
+  if (lines > 240) lines = 240;    /* planes cover the first 240 rows */
+  if (!G_snes.plane_buf) {
+    G_snes.plane_buf = (uint8_t *)malloc((size_t)512 * 240 * 2 + (size_t)512 * 240 * 4);
+    if (!G_snes.plane_buf) { *err = "snes: plane buffer alloc failed"; return 0; }
+  }
+  uint8_t *raw  = G_snes.plane_buf;                        /* 512*240*2 */
+  uint8_t *rgba = G_snes.plane_buf + (size_t)512 * 240 * 2; /* 512*240*4 */
+
+  /* world -> bg_surface */
+  ab_region_read(G_snes.r_lp_world, 0, raw, (size_t)240 * 1024);
+  for (int y = 0; y < lines; y++)
+    ab_snes_565_row_keyed(raw + (size_t)y * 1024, rgba + (size_t)y * width * 4, width);
+  snes_defer_free(G_snes.tex_world);
+  G_snes.tex_world = ab_texture_create_rgba(rgba, width, lines);
+  int layer = layer_begin(bg_surface);
+  ab_draw_texture_rect(G_snes.tex_world, ox, oy, width * scale, lines * scale,
+                       0, 0, width, lines);
+  layer_end(layer);
+
+  /* obj -> spr_surface */
+  ab_region_read(G_snes.r_lp_obj, 0, raw, (size_t)240 * 1024);
+  for (int y = 0; y < lines; y++)
+    ab_snes_565_row_keyed(raw + (size_t)y * 1024, rgba + (size_t)y * width * 4, width);
+  snes_defer_free(G_snes.tex_obj);
+  G_snes.tex_obj = ab_texture_create_rgba(rgba, width, lines);
+  layer = layer_begin(spr_surface);
+  ab_draw_texture_rect(G_snes.tex_obj, ox, oy, width * scale, lines * scale,
+                       0, 0, width, lines);
+  layer_end(layer);
+
+  r->w = width;
+  r->h = lines;
+  r->quads = 2;
+  return 1;
+}
+
 int ab_prof_snes_frame_size(int *w, int *h) {
   ab_region_read(G_snes.r_finfo, 0, G_snes.fi, 8);
   int width = G_snes.fi[0] | (G_snes.fi[1] << 8);
@@ -1739,6 +1797,8 @@ int ab_prof_snes_frame_size(int *w, int *h) {
 
 void ab_prof_snes_shutdown(void) {
   free(G_snes.lpx_big);  G_snes.lpx_big = NULL;  G_snes.lpx_big_size = 0;
+  free(G_snes.plane_buf); G_snes.plane_buf = NULL;
+  G_snes.tex_world = G_snes.tex_obj = 0;
   free(G_snes.plane);    G_snes.plane = NULL;
   free(G_snes.ov_rgba);  G_snes.ov_rgba = NULL;
   free(G_snes.ov_idx);   G_snes.ov_idx = NULL;

@@ -269,6 +269,15 @@ typedef struct { int w, h, quads; } ab_prof_snes_draw_result;
  * 0 with *err set = allocation failure. */
 int ab_prof_snes_draw(double x, double y, double scale,
                       ab_prof_snes_draw_result *r, const char **err);
+/* LAYERED faithful draw: the world plane (every non-OBJ pixel of the
+ * displayed frame) to bg_surface and the OBJ plane to spr_surface, split
+ * by the core at capture time so HDMA/color-math stay baked in. Requires
+ * a core exposing snes_lp_world/snes_lp_obj; errs otherwise. Surface 0 =
+ * current target. Compositing world-then-obj reproduces the frame
+ * exactly: the world plane's sprite holes sit under the obj pixels. */
+int ab_prof_snes_draw_layers(double x, double y, double scale,
+                             int32_t bg_surface, int32_t spr_surface,
+                             ab_prof_snes_draw_result *r, const char **err);
 
 int ab_prof_snes_frame_size(int *w, int *h);          /* 1 ok, 0 not ready */
 void ab_prof_snes_shutdown(void);

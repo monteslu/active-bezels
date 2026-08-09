@@ -83,6 +83,23 @@ void ab_snes_565_row(const uint8_t *src, uint8_t *dst, int px) {
   }
 }
 
+/* Like ab_snes_565_row, but 0x0000 is the transparent KEY the core's plane
+ * split reserves (true black is nudged to 0x0821 at capture). */
+void ab_snes_565_row_keyed(const uint8_t *src, uint8_t *dst, int px) {
+  for (int x = 0; x < px; x++) {
+    uint16_t v = (uint16_t)(src[x * 2] | (src[x * 2 + 1] << 8));
+    if (v == 0) {
+      dst[x * 4] = dst[x * 4 + 1] = dst[x * 4 + 2] = dst[x * 4 + 3] = 0;
+      continue;
+    }
+    uint8_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
+    dst[x * 4]     = (uint8_t)((r << 3) | (r >> 2));
+    dst[x * 4 + 1] = (uint8_t)((g << 2) | (g >> 4));
+    dst[x * 4 + 2] = (uint8_t)((b << 3) | (b >> 2));
+    dst[x * 4 + 3] = 255;
+  }
+}
+
 void ab_snes_palette(const uint8_t *cgram, uint8_t *rgba256) {
   for (int i = 0; i < 256; i++) {
     uint16_t v = (uint16_t)(cgram[i * 2] | (cgram[i * 2 + 1] << 8));
