@@ -922,7 +922,16 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
        * non-destructively (pbuffer stays current) when the context's config
        * has no window bit. */
       if (gl.attachWindow?.(nativeHandle, this.ctxId)) {
-        gl.setSwapInterval?.(1, this.ctxId);
+        /* Interval 0, NOT 1: the host's frame loop is paced by the AUDIO
+         * clock (it steps 0/1/2 core frames to hold the queue at target),
+         * and a vsync-blocking swap fights that regulator -- the block
+         * shifts tick timing, the queue over/under-drains, and the
+         * regulator answers with burst or skipped steps: even presents,
+         * uneven GAME TIME, i.e. jank at a "perfect 60fps". Non-blocking
+         * swaps hand pacing back to the audio clock; an occasional
+         * present landing twice on one vblank is far less visible than
+         * hitching game time. */
+        gl.setSwapInterval?.(0, this.ctxId);
         this.windowMode = true;
         return 1;
       }
@@ -941,12 +950,9 @@ export class ActiveBezelGpuCompositor extends ActiveBezelCompositor {
         this._recreateSurfaces();
         return 0;
       }
-      /* Block on vsync. The GPU blit+swap costs ~0.2ms, so there is budget
-       * to wait for vblank — and NOT waiting means timer-paced swaps land at
-       * random phases of the refresh: frames shown twice or skipped, i.e.
-       * microstutter at a "perfect" 60fps. (interval 0 was only ever right
-       * for the old software present, whose 13.6ms had no room to block.) */
-      gl.setSwapInterval?.(1, this.ctxId);
+      /* Interval 0: see the attach path above -- the audio clock paces the
+       * host loop, and a blocking swap fights it into burst/skip stepping. */
+      gl.setSwapInterval?.(0, this.ctxId);
       this.windowMode = true;
       this.gpuReady = false;     /* init(true) flips it back on */
       this.gpuTextures = new Map();
